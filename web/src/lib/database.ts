@@ -1,53 +1,132 @@
-import fs from 'fs';
-import path from 'path';
+import { Client, Pool } from 'pg';
 import { Participant, Match, GameState } from '../types';
+import * as dotenv from 'dotenv';
+import * as path from 'path';
 
-const DATABASE_DIR = path.join(__dirname, '../../database');
+dotenv.config({ path: path.join(__dirname, '../../.env') });
+
+const connectionString = (process.env.POSTGRES_URL || '').replace('sslmode=require', 'sslmode=verify-full');
+
+const pool = new Pool({
+    connectionString,
+});
 
 export class Database {
-    private static getFilePath(filename: string) {
-        return path.join(DATABASE_DIR, filename);
+    // --- User Authentication ---
+    static async createUser(username: string, passwordHash: string): Promise<number | null> {
+        const client = await pool.connect();
+        try {
+            const res = await client.query(
+                `INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id`,
+                [username, passwordHash]
+            );
+            return res.rows[0].id;
+        } catch (error) {
+            console.error('Error creating user:', error);
+            return null; // Could be duplicate username
+        } finally {
+            client.release();
+        }
     }
 
-    static async getPlayers(): Promise<Participant[]> {
-        const filePath = this.getFilePath('players_index.json');
+    static async getUserByUsername(username: string): Promise<any | null> {
+        const client = await pool.connect();
         try {
-            const data = fs.readFileSync(filePath, 'utf8');
-            const players = JSON.parse(data);
-            // Convert existing format to our Participant interface
-            return Object.entries(players).map(([id, name]) => ({
-                id,
-                name: name as string
+            const res = await client.query(`SELECT * FROM users WHERE username = $1`, [username]);
+            return res.rows.length > 0 ? res.rows[0] : null;
+        } catch (error) {
+            console.error('Error fetching user:', error);
+            return null;
+        } finally {
+            client.release();
+        }
+    }
+
+    static async getUserById(id: number): Promise<any | null> {
+        const client = await pool.connect();
+        try {
+            const res = await client.query(`SELECT * FROM users WHERE id = $1`, [id]);
+            return res.rows.length > 0 ? res.rows[0] : null;
+        } catch (error) {
+            console.error('Error fetching user by id:', error);
+            return null;
+        } finally {
+            client.release();
+        }
+    }
+
+    static async mergeGuestData(userId: number, guestSessionId: string) {
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            
+            // Transfer players, tournaments, and matches from guest session to the user.
+            await client.query(`UPDATE players SET user_id = $1, guest_session_id = NULL WHERE guest_session_id = $2 AND user_id IS NULL`, [userId, guestSessionId]);
+            await client.query(`UPDATE tournaments SET user_id = $1, guest_session_id = NULL WHERE guest_session_id = $2 AND user_id IS NULL`, [userId, guestSessionId]);
+            await client.query(`UPDATE matches SET user_id = $1, guest_session_id = NULL WHERE guest_session_id = $2 AND user_id IS NULL`, [userId, guestSessionId]);
+            
+            await client.query('COMMIT');
+        } catch (error) {
+            await client.query('ROLLBACK');
+            console.error('Error merging guest data:', error);
+        } finally {
+            client.release();
+        }
+    }
+
+    static async getPlayers(userId: number | null = null, guestSessionId: string | null = null): Promise<Participant[]> {
+        const client = await pool.connect();
+        try {
+            let res;
+            if (userId) {
+                res = await client.query('SELECT * FROM players WHERE user_id = $1 ORDER BY id', [userId]);
+            } else {
+                res = await client.query('SELECT * FROM players WHERE guest_session_id = $1 ORDER BY id', [guestSessionId]);
+            }
+            return res.rows.map(row => ({
+                id: row.id.toString(),
+                name: row.name
             }));
         } catch (error) {
             console.error('Error reading players:', error);
             return [];
+        } finally {
+            client.release();
         }
     }
 
-    static async getMatchHistory(): Promise<Match[]> {
-        const filePath = this.getFilePath('match_history.json');
+    static async getMatchHistory(userId: number | null = null, guestSessionId: string = 'default-guest'): Promise<Match[]> {
+        const client = await pool.connect();
         try {
-            const data = fs.readFileSync(filePath, 'utf8');
-            return JSON.parse(data);
+            let res;
+            if (userId) {
+                res = await client.query('SELECT * FROM matches WHERE user_id = $1 ORDER BY id', [userId]);
+            } else {
+                res = await client.query('SELECT * FROM matches WHERE guest_session_id = $1 ORDER BY id', [guestSessionId]);
+            }
+            return res.rows.map(row => {
+                const match: Match = {
+                    id: row.id.toString(),
+                    teams: row.teams,
+                };
+                if (row.start_time) match.startTime = new Date(row.start_time).getTime();
+                if (row.end_time) match.endTime = new Date(row.end_time).getTime();
+                if (row.winner) match.winner = row.winner;
+                return match;
+            });
         } catch (error) {
             console.error('Error reading match history:', error);
             return [];
+        } finally {
+            client.release();
         }
     }
 
-    static async saveTournament(mode: string, matches: Match[]) {
-        const filePath = this.getFilePath('tournament_history.json');
+    static async saveTournament(mode: string, matches: Match[], userId: number | null = null, guestSessionId: string = 'default-guest') {
+        const client = await pool.connect();
         try {
-            let history: any[] = [];
-            if (fs.existsSync(filePath)) {
-                const data = fs.readFileSync(filePath, 'utf8');
-                if (data.trim()) {
-                    history = JSON.parse(data);
-                }
-            }
-            
-            // Calculate standings (stats) for this specific tournament
+            await client.query('BEGIN');
+
             const stats: Record<string, any> = {};
             matches.forEach(m => {
                 const t1 = m.teams[0];
@@ -80,102 +159,105 @@ export class Database {
                 });
             });
 
-            // Convert stats object to sorted array
             const standings = Object.values(stats).sort((a, b) => {
                 if (b.wins !== a.wins) return b.wins - a.wins;
                 return b.diff - a.diff;
             });
 
-            const tournament = {
-                id: Date.now().toString(),
-                date: Date.now(),
-                mode: mode,
-                matches: matches.map(m => ({ ...m, endTime: m.endTime || Date.now() })),
-                standings: standings
-            };
-            
-            history.push(tournament);
-            fs.writeFileSync(filePath, JSON.stringify(history, null, 4));
+            // Insert Tournament
+            const tourResult = await client.query(
+                `INSERT INTO tournaments (user_id, guest_session_id, mode, standings) VALUES ($1, $2, $3, $4) RETURNING id`,
+                [userId, guestSessionId, mode, JSON.stringify(standings)]
+            );
+            const tournamentId = tourResult.rows[0].id;
 
-            // Update overall player stats for leaderboard
-            await this.updateOverallStats(standings);
-
-        } catch (error) {
-            console.error('Error saving tournament history:', error);
-        }
-    }
-
-    private static async updateOverallStats(tournamentStandings: any[]) {
-        const playerDir = path.join(DATABASE_DIR, 'players');
-        if (!fs.existsSync(playerDir)) fs.mkdirSync(playerDir);
-
-        for (const pStats of tournamentStandings) {
-            try {
-                const statsFile = path.join(playerDir, `${pStats.id}.json`);
-                let overall = { name: pStats.name, gamesPlayed: 0, wins: 0, losses: 0, draws: 0, winRate: 0, pointsFor: 0, pointsAgainst: 0, diff: 0 };
-                
-                if (fs.existsSync(statsFile)) {
-                    const data = fs.readFileSync(statsFile, 'utf8');
-                    overall = { ...overall, ...JSON.parse(data) };
-                }
-
-                overall.gamesPlayed += pStats.matchesPlayed;
-                overall.wins += pStats.wins;
-                overall.losses += pStats.losses;
-                overall.draws = (overall.draws || 0) + pStats.draws;
-                overall.pointsFor = (overall.pointsFor || 0) + pStats.pointsFor;
-                overall.pointsAgainst = (overall.pointsAgainst || 0) + pStats.pointsAgainst;
-                overall.diff = (overall.diff || 0) + pStats.diff;
-                overall.winRate = overall.gamesPlayed > 0 ? Math.round((overall.wins / overall.gamesPlayed) * 100) : 0;
-
-                fs.writeFileSync(statsFile, JSON.stringify(overall, null, 4));
-            } catch (e) {
-                console.error(`Failed to update overall stats for player ${pStats.id}`, e);
+            // Insert Matches
+            for (const match of matches) {
+                await client.query(
+                    `INSERT INTO matches (tournament_id, user_id, guest_session_id, teams, start_time, end_time)
+                     VALUES ($1, $2, $3, $4, $5, $6)`,
+                    [
+                        tournamentId, userId, guestSessionId, JSON.stringify(match.teams), 
+                        match.startTime ? new Date(match.startTime) : null,
+                        match.endTime ? new Date(match.endTime) : null
+                    ]
+                );
             }
+
+            // Update Players Overall Stats
+            await this.updateOverallStats(client, standings);
+
+            await client.query('COMMIT');
+        } catch (error) {
+            await client.query('ROLLBACK');
+            console.error('Error saving tournament history:', error);
+        } finally {
+            client.release();
         }
     }
 
-    static async getTournamentHistory(): Promise<any[]> {
-        const filePath = this.getFilePath('tournament_history.json');
+    private static async updateOverallStats(client: any, tournamentStandings: any[]) {
+        for (const pStats of tournamentStandings) {
+            await client.query(
+                `UPDATE players 
+                 SET games_played = games_played + $1,
+                     wins = wins + $2,
+                     losses = losses + $3,
+                     draws = draws + $4,
+                     points_for = points_for + $5,
+                     points_against = points_against + $6,
+                     diff = diff + $7
+                 WHERE id = $8`,
+                [
+                    pStats.matchesPlayed, pStats.wins, pStats.losses, 
+                    pStats.draws, pStats.pointsFor, pStats.pointsAgainst, 
+                    pStats.diff, parseInt(pStats.id)
+                ]
+            );
+        }
+    }
+
+    static async getTournamentHistory(userId: number | null = null, guestSessionId: string = 'default-guest'): Promise<any[]> {
+        const client = await pool.connect();
         try {
-            const data = fs.readFileSync(filePath, 'utf8');
-            return JSON.parse(data);
+            let res;
+            if (userId) {
+                res = await client.query('SELECT * FROM tournaments WHERE user_id = $1 ORDER BY date DESC', [userId]);
+            } else {
+                res = await client.query('SELECT * FROM tournaments WHERE guest_session_id = $1 ORDER BY date DESC', [guestSessionId]);
+            }
+            return res.rows.map(row => ({
+                id: row.id.toString(),
+                date: row.date ? new Date(row.date).getTime() : undefined,
+                mode: row.mode,
+                standings: row.standings,
+                matches: [] // Can be queried if needed
+            }));
         } catch (error) {
+            console.error('Error getting tournament history:', error);
             return [];
+        } finally {
+            client.release();
         }
     }
 
     static async saveMatch(match: Match) {
-        // Implementation for later: writing back to JSON
+        // Implementation for writing match progress back
     }
 
-    static async addPlayer(name: string): Promise<Participant> {
-        const indexFilePath = this.getFilePath('players_index.json');
+    static async addPlayer(name: string, userId: number | null = null, guestSessionId: string = 'default-guest'): Promise<Participant> {
+        const client = await pool.connect();
         try {
-            const data = fs.readFileSync(indexFilePath, 'utf8');
-            const players = JSON.parse(data);
-            
-            const nextId = (Object.keys(players).length + 1).toString();
-            players[nextId] = name;
-            
-            fs.writeFileSync(indexFilePath, JSON.stringify(players, null, 4));
-            
-            const playerDir = path.join(DATABASE_DIR, 'players');
-            if (!fs.existsSync(playerDir)) fs.mkdirSync(playerDir);
-            
-            const playerStatsFile = path.join(playerDir, `${nextId}.json`);
-            fs.writeFileSync(playerStatsFile, JSON.stringify({
-                name: name,
-                gamesPlayed: 0,
-                wins: 0,
-                losses: 0,
-                winRate: 0
-            }, null, 4));
-
-            return { id: nextId, name };
+            const res = await client.query(
+                `INSERT INTO players (user_id, guest_session_id, name) VALUES ($1, $2, $3) RETURNING id, name`,
+                [userId, guestSessionId, name]
+            );
+            return { id: res.rows[0].id.toString(), name: res.rows[0].name };
         } catch (error) {
             console.error('Error adding player:', error);
             throw error;
+        } finally {
+            client.release();
         }
     }
 }

@@ -9,7 +9,18 @@
 <body class="liverpool-theme">
     <div class="container">
         <% if (typeof hideHeader === 'undefined' || !hideHeader) { %>
-        <header class="header" style="text-align: center; margin-bottom: 20px;">
+        <header class="header" style="text-align: center; margin-bottom: 20px; position: relative;">
+            <div style="position: absolute; right: 0; top: 0; padding: 10px;">
+                <% if (typeof user !== 'undefined' && user) { %>
+                    <span>Hello, <%= user.username %></span>
+                    <form action="/logout" method="POST" style="display:inline; margin-left: 10px;">
+                        <button type="submit" class="btn btn-secondary" style="padding: 5px 10px; font-size: 0.8rem;">Log as out</button>
+                    </form>
+                <% } else { %>
+                    <a href="/login" class="btn btn-secondary" style="padding: 5px 10px; font-size: 0.8rem;">Login</a>
+                    <a href="/signup" class="btn btn-primary" style="padding: 5px 10px; font-size: 0.8rem; margin-left: 5px;">Sign Up</a>
+                <% } %>
+            </div>
             <h1>🏆 Edvins Shuffleboard 🏆</h1>
             <p>You'll Never Walk Alone</p>
         </header>

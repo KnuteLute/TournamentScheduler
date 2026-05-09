@@ -2,7 +2,10 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import expressLayouts from 'express-ejs-layouts';
+import cookieParser from 'cookie-parser';
 import { Database } from './lib/database';
+import { AuthUtils } from './lib/auth';
+import { randomUUID } from 'crypto';
 import { generate1v1Matches, generateFixed2v2Matches , generateNextDynamic2v2Match } from './lib/scheduler';
 import { Match, Participant } from './types';
 
@@ -17,6 +20,97 @@ app.set('layout', 'layout');
 app.use(express.static(path.join(__dirname, '../public')));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
+
+// --- Authentication Middleware ---
+app.use(async (req, res, next) => {
+    res.locals.user = null; // Default to no user for templates
+    res.locals.guestSessionId = null;
+
+    // Handle Auth Cookie
+    const token = req.cookies.token;
+    if (token) {
+        const decoded = AuthUtils.verifyToken(token);
+        if (decoded && decoded.userId) {
+            const user = await Database.getUserById(decoded.userId);
+            if (user) {
+                res.locals.user = { id: user.id, username: user.username };
+            }
+        }
+    }
+
+    // Handle Guest Session Cookie if not authenticated
+    if (!res.locals.user) {
+        let guestSession = req.cookies.guest_session;
+        if (!guestSession) {
+            guestSession = randomUUID();
+            res.cookie('guest_session', guestSession, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 24 * 60 * 60 * 1000 }); // 1 day
+        }
+        res.locals.guestSessionId = guestSession;
+    }
+
+    next();
+});
+
+// --- Auth Routes ---
+app.get('/login', (req, res) => {
+    res.render('login', { title: 'Log In', hideHeader: true, error: null });
+});
+
+app.post('/login', async (req, res) => {
+    const { username, password } = req.body;
+    const user = await Database.getUserByUsername(username);
+    if (!user) {
+        return res.render('login', { title: 'Log In', hideHeader: true, error: 'Invalid username or password.' });
+    }
+    const isMatch = await AuthUtils.comparePassword(password, user.password_hash);
+    if (!isMatch) {
+         return res.render('login', { title: 'Log In', hideHeader: true, error: 'Invalid username or password.' });
+    }
+    const token = AuthUtils.generateToken(user.id);
+    res.cookie('token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 });
+    
+    // Merge guest data
+    const guestSession = req.cookies.guest_session;
+    if (guestSession) {
+        await Database.mergeGuestData(user.id, guestSession);
+        res.clearCookie('guest_session');
+    }
+    
+    res.redirect('/');
+});
+
+app.get('/signup', (req, res) => {
+    res.render('signup', { title: 'Sign Up', hideHeader: true, error: null });
+});
+
+app.post('/signup', async (req, res) => {
+    const { username, password } = req.body;
+    if (password.length < 6) {
+        return res.render('signup', { title: 'Sign Up', hideHeader: true, error: 'Password must be at least 6 characters.' });
+    }
+    const hash = await AuthUtils.hashPassword(password);
+    const userId = await Database.createUser(username, hash);
+    if (!userId) {
+        return res.render('signup', { title: 'Sign Up', hideHeader: true, error: 'Username already taken.' });
+    }
+    const token = AuthUtils.generateToken(userId);
+    res.cookie('token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 });
+    
+    // Merge guest data
+    const guestSession = req.cookies.guest_session;
+    if (guestSession) {
+        await Database.mergeGuestData(userId, guestSession);
+        res.clearCookie('guest_session');
+    }
+    
+    res.redirect('/');
+});
+
+app.post('/logout', (req, res) => {
+    res.clearCookie('token');
+    res.redirect('/');
+});
 
 app.get('/', async (req, res) => {
     const players = await Database.getPlayers();
@@ -98,16 +192,21 @@ app.get('/leaderboard', async (req, res) => {
     });
 });
 
-const server = app.listen(DEFAULT_PORT, () => {
-    console.log(`Server is running on http://localhost:${DEFAULT_PORT}`);
-}).on('error', (err: any) => {
-    if (err.code === 'EADDRINUSE') {
-        console.log(`Port ${DEFAULT_PORT} is busy, trying ${DEFAULT_PORT + 1}...`);
-        app.listen(DEFAULT_PORT + 1);
-    } else {
-        console.error(err);
-    }
-});
+if (process.env.NODE_ENV !== 'production') {
+    const server = app.listen(DEFAULT_PORT, () => {
+        console.log(`Server is running on http://localhost:${DEFAULT_PORT}`);
+    }).on('error', (err: any) => {
+        if (err.code === 'EADDRINUSE') {
+            console.log(`Port ${DEFAULT_PORT} is busy, trying ${DEFAULT_PORT + 1}...`);
+            app.listen(DEFAULT_PORT + 1);
+        } else {
+            console.error(err);
+        }
+    });
+}
+
+// Export the app for Vercel Serverless environment
+export default app;
 
 let tournamentState = {
     mode: '',
