@@ -1,0 +1,45 @@
+<div class="card">
+    <h2>📚 Spillhistorikk</h2>
+    <p>Her kan du se tidligere kamper og resultater</p>
+</div>
+
+<div class="card">
+    <div class="table-container">
+        <% if (locals.tournaments && tournaments.length > 0) { %>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Dato</th>
+                        <th>Modus</th>
+                        <th>Antall Kamper</th>
+                        <th>Gå til</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <% tournaments.forEach((t, index) => { 
+                        const dateStr = new Date(t.date).toLocaleString('no-NO');
+                        const totalMatches = t.matches ? t.matches.length : 0;
+                    %>
+                    <tr>
+                        <td><%= index + 1 %></td>
+                        <td style="font-weight: bold;"><%= dateStr %></td>
+                        <td><%= t.mode %></td>
+                        <td><%= totalMatches %></td>
+                        <td>
+                            <a href="/history/<%= t.id %>" class="button" style="padding: 5px 10px; font-size: 0.9em;">Se Detaljer</a>
+                        </td>
+                    </tr>
+                    <% }) %>
+                </tbody>
+            </table>
+        <% } else { %>
+            <p style="text-align: center; padding: 20px; color: white;">Ingen turneringer fullført enda. Spill en turnering først!</p>
+        <% } %>
+    </div>
+</div>
+
+<div class="nav-container">
+    <a href="/leaderboard" class="nav-button">🏆 Se Ledertavle</a>
+    <a href="/" class="button" style="background: var(--liverpool-grey);">🏠 Tilbake til hjem</a>
+</div>

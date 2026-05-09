@@ -1,0 +1,279 @@
+/* Liverpool FC Themed CSS */
+:root {
+  --liverpool-red: #C8102E;
+  --liverpool-dark-red: #9c0d24;
+  --liverpool-gold: #F6EB61;
+  --liverpool-green: #00B2A9;
+  --liverpool-white: #FFFFFF;
+  --liverpool-black: #000000;
+  --liverpool-grey: #8C8C8C;
+  --liverpool-light-grey: #f5f5f5;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Arial', 'Helvetica', sans-serif;
+  background: linear-gradient(135deg, var(--liverpool-red) 0%, var(--liverpool-dark-red) 100%);
+  color: var(--liverpool-white);
+  min-height: 100vh;
+  line-height: 1.6;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+/* Header Styles */
+.header {
+  text-align: center;
+  padding: 40px 0;
+  background: rgba(0, 0, 0, 0.1);
+  margin-bottom: 30px;
+  border-radius: 15px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.header h1 {
+  font-size: 2.8em;
+  color: var(--liverpool-gold);
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+  margin-bottom: 10px;
+  font-weight: bold;
+}
+
+.header h2 {
+  font-size: 2.2em;
+  color: var(--liverpool-white);
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+  margin-bottom: 10px;
+}
+
+.header p {
+  font-size: 1.1em;
+  color: var(--liverpool-light-grey);
+  opacity: 0.9;
+}
+
+/* Navigation Styles */
+.nav-container {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  max-width: 400px;
+  margin: 0 auto;
+}
+
+.nav-button, .button {
+  background: linear-gradient(135deg, var(--liverpool-green) 0%, #008a83 100%);
+  color: var(--liverpool-white);
+  border: none;
+  padding: 18px 25px;
+  font-size: 1.2em;
+  font-weight: 600;
+  border-radius: 12px;
+  cursor: pointer;
+  text-decoration: none;
+  text-align: center;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.nav-button:hover, .button:hover {
+  background: linear-gradient(135deg, var(--liverpool-gold) 0%, #e6d455 100%);
+  color: var(--liverpool-black);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+
+.nav-button:active, .button:active {
+  transform: translateY(0);
+}
+
+/* Card Styles */
+.card {
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  border-radius: 15px;
+  padding: 30px;
+  margin-bottom: 20px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.card h3 {
+  color: var(--liverpool-gold);
+  margin-bottom: 15px;
+  font-size: 1.4em;
+}
+
+/* Form Styles */
+.form-group {
+  margin-bottom: 20px;
+  text-align: left;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--liverpool-white);
+  font-weight: 600;
+}
+
+.form-group input,
+.form-group select,
+.form-group textarea {
+  width: 100%;
+  padding: 12px 15px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--liverpool-white);
+  font-size: 1em;
+  transition: border-color 0.3s ease;
+}
+
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+  outline: none;
+  border-color: var(--liverpool-gold);
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.form-group input::placeholder {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* Table Styles */
+.table-container {
+  overflow-x: auto;
+  border-radius: 12px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+}
+
+table th {
+  background: var(--liverpool-green);
+  color: var(--liverpool-white);
+  padding: 15px 12px;
+  text-align: left;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+table td {
+  padding: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--liverpool-white);
+}
+
+table tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+table tr:hover {
+  background: rgba(246, 235, 97, 0.1);
+}
+
+/* Alert Styles */
+.alert {
+  padding: 15px 20px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  font-weight: 500;
+}
+
+.alert-success {
+  background: rgba(0, 178, 169, 0.2);
+  border: 1px solid var(--liverpool-green);
+  color: var(--liverpool-white);
+}
+
+.alert-error {
+  background: rgba(200, 16, 46, 0.3);
+  border: 1px solid var(--liverpool-red);
+  color: var(--liverpool-white);
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .container {
+    padding: 15px;
+  }
+  
+  .header h1 {
+    font-size: 2.2em;
+  }
+  
+  .header h2 {
+    font-size: 1.8em;
+  }
+  
+  .nav-container {
+    max-width: 100%;
+  }
+  
+  .nav-button, .button {
+    padding: 15px 20px;
+    font-size: 1.1em;
+  }
+  
+  .card {
+    padding: 20px;
+  }
+  
+  table th, table td {
+    padding: 10px 8px;
+    font-size: 0.9em;
+  }
+}
+
+/* Liverpool Badge Inspired Elements */
+.badge-accent {
+  position: relative;
+}
+
+.badge-accent::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  left: -5px;
+  right: -5px;
+  bottom: -5px;
+  background: linear-gradient(45deg, var(--liverpool-red), var(--liverpool-gold), var(--liverpool-green));
+  border-radius: 15px;
+  z-index: -1;
+  opacity: 0.3;
+}
+
+/* Loading Spinner */
+.spinner {
+  width: 40px;
+  height: 40px;
+  margin: 20px auto;
+  border: 4px solid rgba(255, 255, 255, 0.3);
+  border-top: 4px solid var(--liverpool-gold);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}

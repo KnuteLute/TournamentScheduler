@@ -1,0 +1,11 @@
+{
+    "name": "Knut",
+    "gamesPlayed": 65,
+    "wins": 8,
+    "losses": 5,
+    "draws": 52,
+    "winRate": 12,
+    "pointsFor": 38,
+    "pointsAgainst": 25,
+    "diff": 13
+}

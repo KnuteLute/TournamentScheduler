@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{TITLE}} - Edvins Shuffleboard</title>
+    <style>
+        {{CSS_CONTENT}}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>🏆 Edvins Shuffleboard 🏆</h1>
+            <p>You'll Never Walk Alone</p>
+        </header>
+        
+        <main>
+            {{CONTENT}}
+        </main>
+        
+        <footer style="text-align: center; margin-top: 40px; padding: 20px; opacity: 0.8;">
+            <p>&copy; 2025 Edvins Shuffleboard - Inspirert av Liverpool FC</p>
+        </footer>
+    </div>
+    
+    <script>
+        // Add some basic JavaScript functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            // Add click effects to buttons
+            const buttons = document.querySelectorAll('.button, .nav-button');
+            buttons.forEach(button => {
+                button.addEventListener('click', function() {
+                    this.style.transform = 'scale(0.95)';
+                    setTimeout(() => {
+                        this.style.transform = '';
+                    }, 150);
+                });
+            });
+        });
+    </script>
+</body>
+</html>

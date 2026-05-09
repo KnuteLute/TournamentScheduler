@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><%= typeof title !== 'undefined' ? title : '' %> - Edvins Shuffleboard</title>
+    <link rel="stylesheet" href="/liverpool-theme.css">
+</head>
+<body class="liverpool-theme">
+    <div class="container">
+        <% if (typeof hideHeader === 'undefined' || !hideHeader) { %>
+        <header class="header" style="text-align: center; margin-bottom: 20px;">
+            <h1>🏆 Edvins Shuffleboard 🏆</h1>
+            <p>You'll Never Walk Alone</p>
+        </header>
+        <% } %>
+        
+        <main>
+            <%- body %>
+        </main>
+        
+        <footer style="text-align: center; margin-top: 40px; padding: 20px; opacity: 0.8;">
+            <p>&copy; 2025 Edvins Shuffleboard - Inspirert av Liverpool FC</p>
+        </footer>
+    </div>
+</body>
+</html>

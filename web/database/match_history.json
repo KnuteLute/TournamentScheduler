@@ -1,0 +1,284 @@
+[
+    {
+        "id": "2v2r-0",
+        "teams": [
+            {
+                "id": "t-3-4",
+                "participants": [
+                    {
+                        "id": "3",
+                        "name": "Hilde"
+                    },
+                    {
+                        "id": "4",
+                        "name": "Sara"
+                    }
+                ],
+                "score": 2
+            },
+            {
+                "id": "t-1-2",
+                "participants": [
+                    {
+                        "id": "1",
+                        "name": "Edvin"
+                    },
+                    {
+                        "id": "2",
+                        "name": "Erna"
+                    }
+                ],
+                "score": 4
+            }
+        ],
+        "endTime": 1777715288312
+    },
+    {
+        "id": "2v2r-1",
+        "teams": [
+            {
+                "id": "t-4-5",
+                "participants": [
+                    {
+                        "id": "4",
+                        "name": "Sara"
+                    },
+                    {
+                        "id": "5",
+                        "name": "Annabell"
+                    }
+                ],
+                "score": 1
+            },
+            {
+                "id": "t-2-3",
+                "participants": [
+                    {
+                        "id": "2",
+                        "name": "Erna"
+                    },
+                    {
+                        "id": "3",
+                        "name": "Hilde"
+                    }
+                ],
+                "score": 1
+            }
+        ],
+        "endTime": 1777715288312
+    },
+    {
+        "id": "2v2r-0",
+        "teams": [
+            {
+                "id": "t-2-5",
+                "participants": [
+                    {
+                        "id": "2",
+                        "name": "Erna"
+                    },
+                    {
+                        "id": "5",
+                        "name": "Annabell"
+                    }
+                ],
+                "score": 0
+            },
+            {
+                "id": "t-3-4",
+                "participants": [
+                    {
+                        "id": "3",
+                        "name": "Hilde"
+                    },
+                    {
+                        "id": "4",
+                        "name": "Sara"
+                    }
+                ],
+                "score": 2
+            }
+        ],
+        "endTime": 1777715326762
+    },
+    {
+        "id": "2v2r-1",
+        "teams": [
+            {
+                "id": "t-3-5",
+                "participants": [
+                    {
+                        "id": "3",
+                        "name": "Hilde"
+                    },
+                    {
+                        "id": "5",
+                        "name": "Annabell"
+                    }
+                ],
+                "score": 0
+            },
+            {
+                "id": "t-2-4",
+                "participants": [
+                    {
+                        "id": "2",
+                        "name": "Erna"
+                    },
+                    {
+                        "id": "4",
+                        "name": "Sara"
+                    }
+                ],
+                "score": 0
+            }
+        ],
+        "endTime": 1777715326762
+    },
+    {
+        "id": "2v2r-0",
+        "teams": [
+            {
+                "id": "t-4-5",
+                "participants": [
+                    {
+                        "id": "4",
+                        "name": "Sara"
+                    },
+                    {
+                        "id": "5",
+                        "name": "Annabell"
+                    }
+                ],
+                "score": 1
+            },
+            {
+                "id": "t-2-3",
+                "participants": [
+                    {
+                        "id": "2",
+                        "name": "Erna"
+                    },
+                    {
+                        "id": "3",
+                        "name": "Hilde"
+                    }
+                ],
+                "score": 4
+            }
+        ],
+        "endTime": 1777715376561
+    },
+    {
+        "id": "2v2r-1",
+        "teams": [
+            {
+                "id": "t-1-3",
+                "participants": [
+                    {
+                        "id": "1",
+                        "name": "Edvin"
+                    },
+                    {
+                        "id": "3",
+                        "name": "Hilde"
+                    }
+                ],
+                "score": 0
+            },
+            {
+                "id": "t-2-5",
+                "participants": [
+                    {
+                        "id": "2",
+                        "name": "Erna"
+                    },
+                    {
+                        "id": "5",
+                        "name": "Annabell"
+                    }
+                ],
+                "score": 3
+            }
+        ],
+        "endTime": 1777715376561
+    },
+    {
+        "id": "1v1-0-1",
+        "teams": [
+            {
+                "id": "t-2",
+                "participants": [
+                    {
+                        "id": "2",
+                        "name": "Erna"
+                    }
+                ],
+                "score": 0
+            },
+            {
+                "id": "t-3",
+                "participants": [
+                    {
+                        "id": "3",
+                        "name": "Hilde"
+                    }
+                ],
+                "score": 0
+            }
+        ],
+        "endTime": 1777715527177
+    },
+    {
+        "id": "1v1-1-0",
+        "teams": [
+            {
+                "id": "t-1",
+                "participants": [
+                    {
+                        "id": "1",
+                        "name": "Edvin"
+                    }
+                ],
+                "score": 0
+            },
+            {
+                "id": "t-3",
+                "participants": [
+                    {
+                        "id": "3",
+                        "name": "Hilde"
+                    }
+                ],
+                "score": 0
+            }
+        ],
+        "endTime": 1777715527177
+    },
+    {
+        "id": "1v1-2-0",
+        "teams": [
+            {
+                "id": "t-1",
+                "participants": [
+                    {
+                        "id": "1",
+                        "name": "Edvin"
+                    }
+                ],
+                "score": 0
+            },
+            {
+                "id": "t-2",
+                "participants": [
+                    {
+                        "id": "2",
+                        "name": "Erna"
+                    }
+                ],
+                "score": 0
+            }
+        ],
+        "endTime": 1777715527177
+    }
+]

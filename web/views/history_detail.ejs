@@ -1,0 +1,73 @@
+<div class="card" style="margin-bottom: 20px;">
+    <h2>Detaljer for Turnering (<%= tournament.mode %>)</h2>
+    <p>Spilt den: <%= new Date(tournament.date).toLocaleString('no-NO') %></p>
+</div>
+
+<div class="card" style="margin-bottom: 20px;">
+    <h3>🏆 Turneringsresultat (Standings)</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Spiller</th>
+                <th title="Kamper spilt">K</th>
+                <th title="Seiere">S</th>
+                <th title="Uavgjort">U</th>
+                <th title="Tap">T</th>
+                <th title="Poeng for">M+</th>
+                <th title="Poeng mot">M-</th>
+                <th title="Målforskjell">Diff</th>
+            </tr>
+        </thead>
+        <tbody>
+            <% tournament.standings.forEach(stat => { %>
+            <tr>
+                <td style="font-weight: bold;"><%= stat.name %></td>
+                <td><%= stat.matchesPlayed %></td>
+                <td><%= stat.wins %></td>
+                <td><%= stat.draws %></td>
+                <td><%= stat.losses %></td>
+                <td><%= stat.pointsFor %></td>
+                <td><%= stat.pointsAgainst %></td>
+                <td style="font-weight: bold;"><%= stat.diff > 0 ? '+' + stat.diff : stat.diff %></td>
+            </tr>
+            <% }) %>
+        </tbody>
+    </table>
+</div>
+
+<div class="card" style="margin-bottom: 20px;">
+    <h3>Kampoversikt</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Kamp</th>
+                <th>Lag 1</th>
+                <th>Resultat</th>
+                <th>Lag 2</th>
+            </tr>
+        </thead>
+        <tbody>
+            <% tournament.matches.forEach((match, index) => { 
+                const t1 = match.teams && match.teams[0];
+                const t2 = match.teams && match.teams[1];
+                if (!t1 || !t2) return;
+                
+                const t1Names = t1.participants.map(p => p.name).join(' & ');
+                const t2Names = t2.participants.map(p => p.name).join(' & ');
+                const isT1Winner = t1.score > t2.score;
+                const isT2Winner = t2.score > t1.score;
+            %>
+            <tr>
+                <td>#<%= index + 1 %></td>
+                <td style="font-weight: <%= isT1Winner ? 'bold' : 'normal' %>;"><%= t1Names %></td>
+                <td style="font-weight: bold;"><%= t1.score %> - <%= t2.score %></td>
+                <td style="font-weight: <%= isT2Winner ? 'bold' : 'normal' %>;"><%= t2Names %></td>
+            </tr>
+            <% }) %>
+        </tbody>
+    </table>
+</div>
+
+<div style="text-align: center; margin-top: 20px;">
+    <a href="/history" class="button" style="background: var(--liverpool-grey);">Tilbake til Historikk</a>
+</div>

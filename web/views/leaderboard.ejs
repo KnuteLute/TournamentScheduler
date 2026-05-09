@@ -1,0 +1,58 @@
+<div class="card">
+    <h2>🏆 Ledertavle</h2>
+    <p>Se hvem som leder i turneringen!</p>
+</div>
+
+<div class="card">
+    <div class="table-container">
+        <% if (locals.leaderboard && leaderboard.length > 0) { %>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Plass</th>
+                        <th>Spiller</th>
+                        <th title="Totalt antall poeng">Poeng</th>
+                        <th title="Kamper spilt">K</th>
+                        <th title="Seiere">S</th>
+                        <th title="Uavgjort">U</th>
+                        <th title="Tap">T</th>
+                        <th title="Poeng for">M+</th>
+                        <th title="Poeng mot">M-</th>
+                        <th title="Målforskjell">Diff</th>
+                        <th title="Seiersprosent">Win %</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <% leaderboard.forEach((stat, index) => { 
+                        // Beregn win rate
+                        const winRate = stat.gamesPlayed > 0 
+                            ? Math.round((stat.wins / stat.gamesPlayed) * 100) 
+                            : 0;
+                    %>
+                    <tr>
+                        <td style="font-weight: bold;"><%= index + 1 %></td>
+                        <td style="font-weight: bold; font-size: 1.1em;"><%= stat.name %></td>
+                        <td style="font-weight: bold; color: var(--liverpool-gold);"><%= (stat.wins * 3 + stat.draws) %></td>
+                        <td><%= stat.gamesPlayed %></td>
+                        <td style="color: #4CAF50;"><%= stat.wins %></td>
+                        <td style="color: #FFC107;"><%= stat.draws %></td>
+                        <td style="color: #F44336;"><%= stat.losses %></td>
+                        <td><%= stat.pointsFor %></td>
+                        <td><%= stat.pointsAgainst %></td>
+                        <td style="font-weight: bold;"><%= stat.diff > 0 ? '+' + stat.diff : stat.diff %></td>
+                        <td><%= winRate %>%</td>
+                    </tr>
+                    <% }) %>
+                </tbody>
+            </table>
+        <% } else { %>
+            <p style="text-align: center; padding: 20px; color: var(--liverpool-white);">Ingen data tilgjengelig. Spill noen kamper for å komme på ledertavlen!</p>
+        <% } %>
+    </div>
+</div>
+
+<div class="nav-container">
+    <a href="/history" class="nav-button">📚 Se Historikk</a>
+    <a href="/play" class="nav-button">⚽ Spill igjen</a>
+    <a href="/" class="button" style="background: var(--liverpool-grey);">🏠 Tilbake til hjem</a>
+</div>

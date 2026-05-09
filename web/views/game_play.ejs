@@ -1,0 +1,126 @@
+<style>
+    .match-container {
+        background-color: white;
+        border-radius: 10px;
+        padding: 20px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        margin-bottom: 20px;
+        color: black;
+    }
+    .match-info {
+        text-align: center;
+        margin-bottom: 20px;
+    }
+    .players {
+        font-size: 1.5em;
+        font-weight: bold;
+        margin-bottom: 15px;
+    }
+    .vs {
+        display: inline-block;
+        margin: 0 10px;
+        color: #777;
+    }
+    .score-form {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 15px;
+        margin: 25px 0;
+    }
+    .score-input {
+        width: 80px;
+        padding: 10px;
+        font-size: 1.3em;
+        text-align: center;
+        border: 2px solid #ddd;
+        border-radius: 5px;
+    }
+    .nav-buttons {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 20px;
+    }
+    .secondary {
+        background-color: #7f8c8d;
+    }
+    .end-button {
+        background-color: #e74c3c;
+        display: block;
+        margin: 30px auto 0;
+        width: 100%;
+    }
+</style>
+
+<div class="card" style="margin-bottom: 20px;">
+    <h2 style="text-align: center; margin: 0;"><%= title %></h2>
+</div>
+
+<form id="scoreForm" action="/tournament/score" method="POST">
+    <div class="match-container">
+        <div class="match-info">
+            <div class="players">
+                <% 
+                    const team1Names = match.teams[0].participants.map(p => p.name).join(' & ');
+                    const team2Names = match.teams[1].participants.map(p => p.name).join(' & ');
+                %>
+                <%= team1Names %> <span class="vs">mot</span> <%= team2Names %>
+            </div>
+            <p style="color: #666;">
+                Runde <%= currentIndex + 1 %> 
+                <% if (mode !== '2v2-rotating') { %>
+                    av <%= totalMatches %>
+                <% } %>
+            </p>
+        </div>
+        
+        <div class="score-form">
+            <div style="text-align: center;">
+                <label>Poeng lag 1</label><br>
+                <input type="number" name="score1" class="score-input" value="<%= match.teams[0].score || 0 %>" min="0" required>
+            </div>
+            
+            <div style="text-align: center;">
+                <label>Poeng lag 2</label><br>
+                <input type="number" name="score2" class="score-input" value="<%= match.teams[1].score || 0 %>" min="0" required>
+            </div>
+        </div>
+    </div>
+    
+    <div class="nav-buttons">
+        <% if (currentIndex > 0) { %>
+            <button type="submit" name="action" value="prev" class="button secondary">Forrige runde</button>
+        <% } else { %>
+            <span class="button secondary" style="opacity:0.5;cursor:default;">Forrige runde</span>
+        <% } %>
+
+        <% if (currentIndex < totalMatches - 1 || mode === '2v2-rotating') { %>
+            <button type="submit" name="action" value="next" class="button">Neste runde</button>
+        <% } else { %>
+            <span class="button" style="opacity:0.5;cursor:default;">Neste runde</span>
+        <% } %>
+    </div>
+    
+    <% if (mode === '2v2-rotating') { %>
+        <button type="submit" name="action" value="skip" class="button secondary" style="width: 100%; margin-top: 15px; background-color: #f39c12;">Hopp over Match</button>
+    <% } %>
+
+    <button type="submit" name="action" value="finish" class="button end-button">Avslutt Turnering</button>
+</form>
+
+<% if (mode === '2v2-rotating' && typeof participants !== 'undefined') { %>
+    <div class="match-container" style="margin-top: 30px;">
+        <h3 style="text-align: center;">Pause Spillere</h3>
+        <form action="/tournament/toggle_pause" method="POST">
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; margin-bottom: 20px;">
+                <% participants.forEach(p => { %>
+                    <label style="display: flex; align-items: center; gap: 8px;">
+                        <input type="checkbox" name="pausedIds" value="<%= p.id %>" <%= Array.isArray(pausedPlayerIds) && pausedPlayerIds.includes(p.id) ? 'checked' : '' %>>
+                        <%= p.name %>
+                    </label>
+                <% }) %>
+            </div>
+            <button type="submit" class="button secondary" style="width: 100%;">Oppdater Pause-status</button>
+        </form>
+    </div>
+<% } %>
