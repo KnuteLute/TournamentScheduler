@@ -115,7 +115,7 @@ app.post('/logout', (req, res) => {
 });
 
 app.get('/', async (req, res) => {
-    const players = await Database.getPlayers();
+    const players = await Database.getPlayers(res.locals.user?.id || null, res.locals.guestSessionId);
     res.render('home', { 
         title: 'Shuffle Tournament',
         players: players,
@@ -131,7 +131,7 @@ app.get('/play', async (req, res) => {
 app.get('/play/:mode', async (req, res) => {
     const { mode } = req.params;
     const { error } = req.query;
-    const players = await Database.getPlayers();
+    const players = await Database.getPlayers(res.locals.user?.id || null, res.locals.guestSessionId);
     res.render('team_selection', { 
         title: `Select Players for ${mode}`,
         mode: mode,
@@ -144,7 +144,7 @@ app.post('/players/add', async (req, res) => {
     const { name, mode } = req.body;
     if (name && name.trim()) {
         try {
-            await Database.addPlayer(name.trim());
+            await Database.addPlayer(name.trim(), res.locals.user?.id || null, res.locals.guestSessionId);
         } catch (e) {
             console.error(e);
         }
@@ -153,7 +153,7 @@ app.post('/players/add', async (req, res) => {
 });
 
 app.get('/history', async (req, res) => {
-    const tournaments = await Database.getTournamentHistory();
+    const tournaments = await Database.getTournamentHistory(res.locals.user?.id || null, res.locals.guestSessionId);
     res.render('history', { 
         title: 'Turneringshistorikk',
         tournaments: tournaments.reverse() // show newest first
@@ -161,7 +161,7 @@ app.get('/history', async (req, res) => {
 });
 
 app.get('/history/:id', async (req, res) => {
-    const tournaments = await Database.getTournamentHistory();
+    const tournaments = await Database.getTournamentHistory(res.locals.user?.id || null, res.locals.guestSessionId);
     const tournament = tournaments.find(t => t.id === req.params.id);
     if (!tournament) return res.redirect('/history');
     
@@ -172,21 +172,11 @@ app.get('/history/:id', async (req, res) => {
 });
 
 app.get('/leaderboard', async (req, res) => {
-    const allPlayers = await Database.getPlayers();
-    const playerDir = path.join(__dirname, '../database/players');
+    const allPlayers = await Database.getPlayers(res.locals.user?.id || null, res.locals.guestSessionId);
     
-    let leaderboard = [];
-    for (const p of allPlayers) {
-        try {
-            const statFile = path.join(playerDir, `${p.id}.json`);
-            if (fs.existsSync(statFile)) {
-                const stats = JSON.parse(fs.readFileSync(statFile, 'utf8'));
-                leaderboard.push(stats);
-            }
-        } catch (e) {}
-    }
+    let leaderboard = allPlayers;
     
-    leaderboard.sort((a, b) => b.wins - a.wins || b.diff - a.diff);
+    leaderboard.sort((a: any, b: any) => b.wins - a.wins || b.diff - a.diff);
 
     res.render('leaderboard', { 
         title: 'Ledertavle (Overall)',
@@ -230,7 +220,7 @@ app.post('/play/:mode/start', async (req, res) => {
         playerIds = [playerIds];
     }
     
-    const allPlayers = await Database.getPlayers();
+    const allPlayers = await Database.getPlayers(res.locals.user?.id || null, res.locals.guestSessionId);
     const participants: Participant[] = playerIds.map((id: string) => {
         const found = allPlayers.find(p => p.id === id);
         return found ? found : { id, name: id };
@@ -336,7 +326,7 @@ app.post('/tournament/toggle_pause', (req, res) => {
 
 app.post('/tournament/finish', async (req, res) => {
     if (tournamentState.matches.length > 0) {
-        await Database.saveTournament(tournamentState.mode, tournamentState.matches);
+        await Database.saveTournament(tournamentState.mode, tournamentState.matches, res.locals.user?.id || null, res.locals.guestSessionId);
     }
     tournamentState.matches = [];
     tournamentState.currentMatchIndex = 0;

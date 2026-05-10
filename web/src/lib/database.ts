@@ -85,7 +85,14 @@ export class Database {
             }
             return res.rows.map(row => ({
                 id: row.id.toString(),
-                name: row.name
+                name: row.name,
+                gamesPlayed: row.games_played || 0,
+                wins: row.wins || 0,
+                losses: row.losses || 0,
+                draws: row.draws || 0,
+                pointsFor: row.points_for || 0,
+                pointsAgainst: row.points_against || 0,
+                diff: row.diff || 0
             }));
         } catch (error) {
             console.error('Error reading players:', error);
