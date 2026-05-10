@@ -17,7 +17,10 @@ app.set('views', path.join(__dirname, '../views'));
 app.use(expressLayouts);
 app.set('layout', 'layout');
 
-app.use(express.static(path.join(__dirname, '../public')));
+app.use(express.static(path.join(__dirname, '../public'), {
+    maxAge: '1y',
+    immutable: true
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
@@ -150,6 +153,20 @@ app.post('/players/add', async (req, res) => {
         }
     }
     res.redirect(`/play/${mode}`);
+});
+
+app.post('/api/players/add', async (req, res) => {
+    const { name } = req.body;
+    if (name && name.trim()) {
+        try {
+            const player = await Database.addPlayer(name.trim(), res.locals.user?.id || null, res.locals.guestSessionId);
+            return res.json({ success: true, player });
+        } catch (e) {
+            console.error(e);
+            return res.status(500).json({ error: 'Failed to add player' });
+        }
+    }
+    return res.status(400).json({ error: 'Invalid name' });
 });
 
 app.get('/history', async (req, res) => {

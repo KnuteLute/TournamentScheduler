@@ -12,17 +12,16 @@
 
 <div class="card" style="margin-top: 20px;">
     <h2>Add New Player</h2>
-    <form action="/players/add" method="POST" style="display: flex; gap: 10px;">
-        <input type="hidden" name="mode" value="<%= mode %>">
-        <input type="text" name="name" placeholder="Player Name" required style="padding: 10px; border-radius: 8px; flex-grow: 1;">
-        <button type="submit" class="button" style="padding: 10px 20px;">Add</button>
+    <form id="add-player-form" style="display: flex; gap: 10px;">
+        <input type="text" name="name" id="new-player-name" placeholder="Player Name" required style="padding: 10px; border-radius: 8px; flex-grow: 1;">
+        <button type="submit" class="button" style="padding: 10px 20px;" id="add-player-btn">Add</button>
     </form>
 </div>
 
 <div class="card" style="margin-top: 20px;">
     <h2>Select Participants</h2>
     <form action="/play/<%= mode %>/start" method="POST">
-        <div class="player-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 15px; margin: 20px 0;">
+        <div class="player-grid" id="player-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 15px; margin: 20px 0;">
             <% players.forEach(player => { %>
                 <div class="player-checkbox" style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 10px; cursor: pointer;">
                     <input type="checkbox" name="playerIds" value="<%= player.id %>" id="p-<%= player.id %>" style="width: 20px; height: 20px; vertical-align: middle;">
@@ -36,3 +35,49 @@
 <div style="margin-top: 20px; text-align: center;">
     <a href="/play" class="button" style="background: var(--liverpool-grey);">Back</a>
 </div>
+
+<script>
+document.getElementById('add-player-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('add-player-btn');
+    const input = document.getElementById('new-player-name');
+    const name = input.value.trim();
+    if (!name) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Adding...';
+
+    try {
+        const res = await fetch('/api/players/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
+
+        if (res.ok) {
+            const data = await res.json();
+            if (data.success && data.player) {
+                // Add new player to DOM
+                const grid = document.getElementById('player-grid');
+                const div = document.createElement('div');
+                div.className = 'player-checkbox';
+                div.style.cssText = 'background: rgba(255,255,255,0.1); padding: 15px; border-radius: 10px; cursor: pointer;';
+                div.innerHTML = `
+                    <input type="checkbox" name="playerIds" value="${data.player.id}" id="p-${data.player.id}" style="width: 20px; height: 20px; vertical-align: middle;" checked>
+                    <label for="p-${data.player.id}" style="margin-left: 10px; font-size: 1.1em;">${data.player.name}</label>
+                `;
+                grid.appendChild(div);
+                input.value = ''; // Clear input
+            }
+        } else {
+            alert('Failed to add player');
+        }
+    } catch (err) {
+        console.error(err);
+        alert('Format error when adding player');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Add';
+    }
+});
+</script>
