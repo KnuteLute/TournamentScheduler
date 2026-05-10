@@ -53,6 +53,7 @@ app.use(async (req, res, next) => {
 });
 
 
+
 // --- Auth Routes ---
 app.get('/login', (req, res) => {
     res.render('login', { title: 'Log In', hideHeader: true, error: null });
