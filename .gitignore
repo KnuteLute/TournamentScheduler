@@ -144,3 +144,6 @@ vite.config.ts.timestamp-*
 
 # Local offline app data
 web/.local-data/
+
+# Local offline app data
+web/.local-data/
