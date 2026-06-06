@@ -114,12 +114,24 @@
             </div>
         </div>
     </div>
+
+
     
     <div class="nav-buttons">
         <% if (currentIndex > 0) { %>
             <button type="submit" name="action" value="prev" class="button secondary">Forrige runde</button>
         <% } else { %>
-            <span class="button secondary" style="opacity:0.5;cursor:default;">Forrige runde</span>
+            <button type="button" class="button secondary" disabled style="opacity:0.5;cursor:default;">Forrige runde</button>
+        <% } %>
+
+        <% if (nextMatchPreview) { %>
+            <div class="next-preview">
+                <div style="font-weight: 700; margin-bottom: 8px;">Neste runde</div>
+                <div style="display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap;">
+                    <div><span style="color: #c1121f; font-weight: 700;">Rødt Lag:</span> <%= nextMatchPreview.teams[0].participants.map(p => p.name).join(' & ') %></div>
+                    <div><span style="color: #1d4ed8; font-weight: 700;">Blått Lag:</span> <%= nextMatchPreview.teams[1].participants.map(p => p.name).join(' & ') %></div>
+                </div>
+            </div>
         <% } %>
 
         <% if (currentIndex < totalMatches - 1 || mode === '2v2-rotating') { %>
@@ -147,12 +159,4 @@
     <button type="submit" name="action" value="finish" class="button end-button">Avslutt turnering</button>
 </form>
 
-<% if (nextMatchPreview) { %>
-    <div class="next-preview">
-        <div style="font-weight: 700; margin-bottom: 8px;">Neste runde</div>
-        <div style="display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap;">
-            <div><span style="color: #c1121f; font-weight: 700;">Rødt Lag:</span> <%= nextMatchPreview.teams[0].participants.map(p => p.name).join(' & ') %></div>
-            <div><span style="color: #1d4ed8; font-weight: 700;">Blått Lag:</span> <%= nextMatchPreview.teams[1].participants.map(p => p.name).join(' & ') %></div>
-        </div>
-    </div>
-<% } %>
+

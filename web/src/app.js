@@ -16,7 +16,7 @@ const DEFAULT_PORT = 3000;
 const MODE_LABELS = {
     '1v1': '1 mot 1',
     '2v2-fixed': '2 mot 2 - faste lag',
-    '2v2-rotating': '2 mot 2 - roterende lag'
+    '2v2-rotating': '2 mot 2'
 };
 function getModeLabel(mode) {
     return MODE_LABELS[mode] || mode;
@@ -251,7 +251,7 @@ app.post('/play/:mode/start', async (req, res) => {
     }
     else if (mode === '2v2-rotating') {
         if (participants.length < 4) {
-            return res.redirect(`/play/${mode}?error=Du trenger minst 4 spillere for roterende 2 mot 2.`);
+            return res.redirect(`/play/${mode}?error=Du trenger minst 4 spillere for 2 mot 2.`);
         }
         tournamentState.matches = [];
         const initialMatch = (0, scheduler_1.generateNextDynamic2v2Match)([], participants, []);
@@ -260,7 +260,7 @@ app.post('/play/:mode/start', async (req, res) => {
     }
     else if (mode === '2v2-fixed') {
         if (participants.length < 4) {
-            return res.redirect(`/play/${mode}?error=Du trenger minst 4 spillere for faste 2 mot 2-lag.`);
+            return res.redirect(`/play/${mode}?error=Du trenger minst 4 spillere for faste 2 mot 2.`);
         }
         tournamentState.matches = (0, scheduler_1.generateFixed2v2Matches)(participants);
     }
