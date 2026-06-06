@@ -1,5 +1,5 @@
 <div class="card" style="max-width: 400px; margin: 0 auto; padding: 20px;">
-    <h2 style="text-align: center; color: var(--lfc-red);">Log In</h2>
+    <h2 style="text-align: center; color: var(--lfc-red);">Logg inn</h2>
     
     <% if (typeof error !== 'undefined' && error) { %>
         <div style="background-color: #ffcccc; color: #cc0000; padding: 10px; border-radius: 4px; margin-bottom: 15px;">
@@ -9,21 +9,21 @@
 
     <form action="/login" method="POST" style="display: flex; flex-direction: column; gap: 15px;">
         <div>
-            <label for="username" style="display: block; margin-bottom: 5px;">Username</label>
+            <label for="username" style="display: block; margin-bottom: 5px;">Brukernavn</label>
             <input type="text" id="username" name="username" class="input-field" required style="width: 100%; padding: 8px;">
         </div>
         <div>
-            <label for="password" style="display: block; margin-bottom: 5px;">Password</label>
+            <label for="password" style="display: block; margin-bottom: 5px;">Passord</label>
             <input type="password" id="password" name="password" class="input-field" required style="width: 100%; padding: 8px;">
         </div>
         
-        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 10px; margin-top: 10px;">Log In</button>
+        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 10px; margin-top: 10px;">Logg inn</button>
     </form>
 
     <div style="text-align: center; margin-top: 20px;">
-        <p>Don't have an account? <a href="/signup" style="color: var(--lfc-red);">Sign up here</a></p>
+        <p>Har du ikke konto? <a href="/signup" style="color: var(--lfc-red);">Registrer deg her</a></p>
     </div>
 </div>
 <div style="text-align: center; margin-top: 20px;">
-    <a href="/" class="btn btn-secondary">Back to Home</a>
+    <a href="/" class="btn btn-secondary">Tilbake til forsiden</a>
 </div>

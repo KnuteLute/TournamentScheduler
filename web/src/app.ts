@@ -12,6 +12,38 @@ import { Match, Participant } from './types';
 const app = express();
 const DEFAULT_PORT = 3000;
 
+const MODE_LABELS: Record<string, string> = {
+    '1v1': '1 mot 1',
+    '2v2-fixed': '2 mot 2 - faste lag',
+    '2v2-rotating': '2 mot 2 - roterende lag'
+};
+
+function getModeLabel(mode: string) {
+    return MODE_LABELS[mode] || mode;
+}
+
+function normalizePlayerName(name: string) {
+    return name.trim().replace(/\s+/g, ' ').toLocaleLowerCase('nb-NO');
+}
+
+function buildNextMatchPreview(
+    mode: string,
+    matches: Match[],
+    currentMatchIndex: number,
+    participants: Participant[],
+    pausedPlayerIds: string[]
+) {
+    if (currentMatchIndex < matches.length - 1) {
+        return matches[currentMatchIndex + 1] || null;
+    }
+
+    if (mode === '2v2-rotating') {
+        return generateNextDynamic2v2Match(matches.slice(0, currentMatchIndex + 1), participants, pausedPlayerIds);
+    }
+
+    return null;
+}
+
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, '../views'));
 app.use(expressLayouts);
@@ -59,18 +91,18 @@ app.use(async (req, res, next) => {
 
 // --- Auth Routes ---
 app.get('/login', (req, res) => {
-    res.render('login', { title: 'Log In', hideHeader: true, error: null });
+    res.render('login', { title: 'Logg inn', hideHeader: true, error: null });
 });
 
 app.post('/login', async (req, res) => {
     const { username, password } = req.body;
     const user = await Database.getUserByUsername(username);
     if (!user) {
-        return res.render('login', { title: 'Log In', hideHeader: true, error: 'Invalid username or password.' });
+           return res.render('login', { title: 'Logg inn', hideHeader: true, error: 'Feil brukernavn eller passord.' });
     }
     const isMatch = await AuthUtils.comparePassword(password, user.password_hash);
     if (!isMatch) {
-         return res.render('login', { title: 'Log In', hideHeader: true, error: 'Invalid username or password.' });
+            return res.render('login', { title: 'Logg inn', hideHeader: true, error: 'Feil brukernavn eller passord.' });
     }
     const token = AuthUtils.generateToken(user.id);
     res.cookie('token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 });
@@ -86,18 +118,18 @@ app.post('/login', async (req, res) => {
 });
 
 app.get('/signup', (req, res) => {
-    res.render('signup', { title: 'Sign Up', hideHeader: true, error: null });
+    res.render('signup', { title: 'Registrer deg', hideHeader: true, error: null });
 });
 
 app.post('/signup', async (req, res) => {
     const { username, password } = req.body;
     if (password.length < 6) {
-        return res.render('signup', { title: 'Sign Up', hideHeader: true, error: 'Password must be at least 6 characters.' });
+        return res.render('signup', { title: 'Registrer deg', hideHeader: true, error: 'Passordet må være minst 6 tegn langt.' });
     }
     const hash = await AuthUtils.hashPassword(password);
     const userId = await Database.createUser(username, hash);
     if (!userId) {
-        return res.render('signup', { title: 'Sign Up', hideHeader: true, error: 'Username already taken.' });
+        return res.render('signup', { title: 'Registrer deg', hideHeader: true, error: 'Brukernavnet er allerede i bruk.' });
     }
     const token = AuthUtils.generateToken(userId);
     res.cookie('token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 });
@@ -120,14 +152,14 @@ app.post('/logout', (req, res) => {
 app.get('/', async (req, res) => {
     const players = await Database.getPlayers(res.locals.user?.id || null, res.locals.guestSessionId);
     res.render('home', { 
-        title: 'Shuffle Tournament',
+        title: 'Shuffleboardturnering',
         players: players,
     });
 });
 
 app.get('/play', async (req, res) => {
     res.render('play', { 
-        title: 'New Game',
+        title: 'Ny kamp',
     });
 });
 
@@ -136,7 +168,7 @@ app.get('/play/:mode', async (req, res) => {
     const { error } = req.query;
     const players = await Database.getPlayers(res.locals.user?.id || null, res.locals.guestSessionId);
     res.render('team_selection', { 
-        title: `Select Players for ${mode}`,
+        title: `Velg spillere for ${getModeLabel(mode)}`,
         mode: mode,
         players: players,
         error: error
@@ -147,6 +179,11 @@ app.post('/players/add', async (req, res) => {
     const { name, mode } = req.body;
     if (name && name.trim()) {
         try {
+            const normalizedName = normalizePlayerName(name);
+            const existingPlayers = await Database.getPlayers(res.locals.user?.id || null, res.locals.guestSessionId);
+            if (existingPlayers.some(player => normalizePlayerName(player.name) === normalizedName)) {
+                return res.redirect(`/play/${mode}?error=Spilleren finnes allerede. Bruk et annet navn.`);
+            }
             await Database.addPlayer(name.trim(), res.locals.user?.id || null, res.locals.guestSessionId);
         } catch (e) {
             console.error(e);
@@ -159,14 +196,19 @@ app.post('/api/players/add', async (req, res) => {
     const { name } = req.body;
     if (name && name.trim()) {
         try {
+            const normalizedName = normalizePlayerName(name);
+            const existingPlayers = await Database.getPlayers(res.locals.user?.id || null, res.locals.guestSessionId);
+            if (existingPlayers.some(player => normalizePlayerName(player.name) === normalizedName)) {
+                return res.status(409).json({ error: 'Spilleren finnes allerede. Bruk et annet navn.' });
+            }
             const player = await Database.addPlayer(name.trim(), res.locals.user?.id || null, res.locals.guestSessionId);
             return res.json({ success: true, player });
         } catch (e) {
             console.error(e);
-            return res.status(500).json({ error: 'Failed to add player' });
+            return res.status(500).json({ error: 'Kunne ikke legge til spiller.' });
         }
     }
-    return res.status(400).json({ error: 'Invalid name' });
+    return res.status(400).json({ error: 'Ugyldig navn.' });
 });
 
 app.get('/history', async (req, res) => {
@@ -183,7 +225,7 @@ app.get('/history/:id', async (req, res) => {
     if (!tournament) return res.redirect('/history');
     
     res.render('history_detail', {
-        title: `Turnering Detaljer`,
+        title: 'Turneringsdetaljer',
         tournament: tournament
     });
 });
@@ -196,7 +238,7 @@ app.get('/leaderboard', async (req, res) => {
     leaderboard.sort((a: any, b: any) => b.wins - a.wins || b.diff - a.diff);
 
     res.render('leaderboard', { 
-        title: 'Ledertavle (Overall)',
+        title: 'Ledertavle',
         leaderboard: leaderboard
     });
 });
@@ -230,7 +272,7 @@ app.post('/play/:mode/start', async (req, res) => {
     let playerIds = req.body.playerIds;
     
     if (!playerIds || (Array.isArray(playerIds) && playerIds.length === 0)) {
-        return res.redirect(`/play/${mode}?error=Please select players`);
+        return res.redirect(`/play/${mode}?error=Velg minst spillere.`);
     }
 
     if (!Array.isArray(playerIds)) {
@@ -251,15 +293,15 @@ app.post('/play/:mode/start', async (req, res) => {
     if (mode === '1v1') {
         tournamentState.matches = generate1v1Matches(participants);
     } else if (mode === '2v2-rotating') {
-        if (participants.length < 3) {
-            return res.redirect(`/play/${mode}?error=Need at least 3 players for Rotating 2v2`);
+        if (participants.length < 4) {
+            return res.redirect(`/play/${mode}?error=Du trenger minst 4 spillere for roterende 2 mot 2.`);
         }
         tournamentState.matches = [];
         const initialMatch = generateNextDynamic2v2Match([], participants, []);
         if (initialMatch) tournamentState.matches.push(initialMatch);
     } else if (mode === '2v2-fixed') {
         if (participants.length < 4) {
-            return res.redirect(`/play/${mode}?error=Need at least 4 players for Fixed 2v2 (creates 2 teams)`);
+            return res.redirect(`/play/${mode}?error=Du trenger minst 4 spillere for faste 2 mot 2-lag.`);
         }
         tournamentState.matches = generateFixed2v2Matches(participants);
     }
@@ -269,28 +311,47 @@ app.post('/play/:mode/start', async (req, res) => {
 
 app.get('/tournament/active', (req, res) => {
     if (tournamentState.matches.length === 0) {
-        return res.redirect('/play?error=No active tournament');
+        return res.redirect('/play?error=Ingen aktiv turnering.');
     }
 
+    const currentMatch = tournamentState.matches[tournamentState.currentMatchIndex];
+    const nextMatchPreview = buildNextMatchPreview(
+        tournamentState.mode,
+        tournamentState.matches,
+        tournamentState.currentMatchIndex,
+        tournamentState.participants,
+        tournamentState.pausedPlayerIds
+    );
+
     res.render('game_play', {
-        title: `Game ${tournamentState.mode}`,
-        match: tournamentState.matches[tournamentState.currentMatchIndex],
+        title: 'Kamp',
+        hideHeader: true,
+        match: currentMatch,
         currentIndex: tournamentState.currentMatchIndex,
         totalMatches: tournamentState.matches.length,
         mode: tournamentState.mode,
         participants: tournamentState.participants,
-        pausedPlayerIds: tournamentState.pausedPlayerIds
+        pausedPlayerIds: tournamentState.pausedPlayerIds,
+        modeLabel: getModeLabel(tournamentState.mode),
+        nextMatchPreview
     });
 });
 
 app.post('/tournament/score', (req, res) => {
     const { score1, score2, action } = req.body;
+    const pausedIds = req.body.pausedIds || [];
     const currentMatch = tournamentState.matches[tournamentState.currentMatchIndex];
     if (currentMatch && currentMatch.teams && currentMatch.teams.length >= 2) {
         const team1 = currentMatch.teams[0];
         const team2 = currentMatch.teams[1];
         if (team1) team1.score = parseInt(score1 || '0', 10);
         if (team2) team2.score = parseInt(score2 || '0', 10);
+    }
+
+    if (Array.isArray(pausedIds)) {
+        tournamentState.pausedPlayerIds = pausedIds;
+    } else if (pausedIds) {
+        tournamentState.pausedPlayerIds = [pausedIds];
     }
     
     if (action === 'prev') {

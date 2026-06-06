@@ -1,4 +1,7 @@
 <style>
+    .game-shell {
+        color: black;
+    }
     .match-container {
         background-color: white;
         border-radius: 10px;
@@ -12,7 +15,7 @@
         margin-bottom: 20px;
     }
     .players {
-        font-size: 1.5em;
+        font-size: 1.8em;
         font-weight: bold;
         margin-bottom: 15px;
     }
@@ -20,6 +23,29 @@
         display: inline-block;
         margin: 0 10px;
         color: #777;
+    }
+    .team-wrap {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        gap: 16px;
+        align-items: center;
+        margin-top: 10px;
+    }
+    .team-box {
+        text-align: center;
+    }
+    .team-label {
+        font-size: 1rem;
+        font-weight: 700;
+        margin-bottom: 8px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+    }
+    .team-label.red {
+        color: #c1121f;
+    }
+    .team-label.blue {
+        color: #1d4ed8;
     }
     .score-form {
         display: flex;
@@ -50,38 +76,40 @@
         margin: 30px auto 0;
         width: 100%;
     }
+    .next-preview {
+        margin-top: 18px;
+        padding: 16px;
+        border-radius: 10px;
+        background: rgba(255,255,255,0.92);
+        color: black;
+    }
 </style>
 
-<div class="card" style="margin-bottom: 20px;">
-    <h2 style="text-align: center; margin: 0;"><%= title %></h2>
-</div>
-
-<form id="scoreForm" action="/tournament/score" method="POST">
+<form id="scoreForm" action="/tournament/score" method="POST" class="game-shell">
     <div class="match-container">
         <div class="match-info">
-            <div class="players">
-                <% 
-                    const team1Names = match.teams[0].participants.map(p => p.name).join(' & ');
-                    const team2Names = match.teams[1].participants.map(p => p.name).join(' & ');
-                %>
-                <%= team1Names %> <span class="vs">mot</span> <%= team2Names %>
+            <div style="font-size: 1.1rem; color: #666; margin-bottom: 10px;">
+                <%= modeLabel %> · Runde <%= currentIndex + 1 %><% if (mode !== '2v2-rotating') { %> av <%= totalMatches %><% } %>
             </div>
-            <p style="color: #666;">
-                Runde <%= currentIndex + 1 %> 
-                <% if (mode !== '2v2-rotating') { %>
-                    av <%= totalMatches %>
-                <% } %>
-            </p>
+            <div class="team-wrap">
+                <div class="team-box">
+                    <div class="team-label red">Rødt Lag</div>
+                    <div class="players"><%= match.teams[0].participants.map(p => p.name).join(' & ') %></div>
+                </div>
+                <div class="vs">mot</div>
+                <div class="team-box">
+                    <div class="team-label blue">Blått Lag</div>
+                    <div class="players"><%= match.teams[1].participants.map(p => p.name).join(' & ') %></div>
+                </div>
+            </div>
         </div>
         
         <div class="score-form">
             <div style="text-align: center;">
-                <label>Poeng lag 1</label><br>
                 <input type="number" name="score1" class="score-input" value="<%= match.teams[0].score || 0 %>" min="0" required>
             </div>
             
             <div style="text-align: center;">
-                <label>Poeng lag 2</label><br>
                 <input type="number" name="score2" class="score-input" value="<%= match.teams[1].score || 0 %>" min="0" required>
             </div>
         </div>
@@ -100,18 +128,10 @@
             <span class="button" style="opacity:0.5;cursor:default;">Neste runde</span>
         <% } %>
     </div>
-    
+
     <% if (mode === '2v2-rotating') { %>
-        <button type="submit" name="action" value="skip" class="button secondary" style="width: 100%; margin-top: 15px; background-color: #f39c12;">Hopp over Match</button>
-    <% } %>
-
-    <button type="submit" name="action" value="finish" class="button end-button">Avslutt Turnering</button>
-</form>
-
-<% if (mode === '2v2-rotating' && typeof participants !== 'undefined') { %>
-    <div class="match-container" style="margin-top: 30px;">
-        <h3 style="text-align: center;">Pause Spillere</h3>
-        <form action="/tournament/toggle_pause" method="POST">
+        <div class="match-container" style="margin-top: 20px;">
+            <h3 style="text-align: center;">Pause spillere</h3>
             <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; margin-bottom: 20px;">
                 <% participants.forEach(p => { %>
                     <label style="display: flex; align-items: center; gap: 8px;">
@@ -120,7 +140,19 @@
                     </label>
                 <% }) %>
             </div>
-            <button type="submit" class="button secondary" style="width: 100%;">Oppdater Pause-status</button>
-        </form>
+            <button type="submit" name="action" value="next" class="button secondary" style="width: 100%;">Oppdater pause-status og gå videre</button>
+        </div>
+    <% } %>
+
+    <button type="submit" name="action" value="finish" class="button end-button">Avslutt turnering</button>
+</form>
+
+<% if (nextMatchPreview) { %>
+    <div class="next-preview">
+        <div style="font-weight: 700; margin-bottom: 8px;">Neste runde</div>
+        <div style="display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap;">
+            <div><span style="color: #c1121f; font-weight: 700;">Rødt Lag:</span> <%= nextMatchPreview.teams[0].participants.map(p => p.name).join(' & ') %></div>
+            <div><span style="color: #1d4ed8; font-weight: 700;">Blått Lag:</span> <%= nextMatchPreview.teams[1].participants.map(p => p.name).join(' & ') %></div>
+        </div>
     </div>
 <% } %>

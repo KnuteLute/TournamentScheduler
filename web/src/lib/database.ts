@@ -1,20 +1,42 @@
-import { Client, Pool } from 'pg';
 import { Participant, Match, GameState } from '../types';
-import * as dotenv from 'dotenv';
-import * as path from 'path';
+import { LocalDatabase } from './local-database';
 
-dotenv.config({ path: path.join(__dirname, '../../.env') });
+declare const require: any;
+declare const process: any;
+declare const __dirname: string;
 
-const connectionString = (process.env.POSTGRES_URL || '').replace('sslmode=require', 'sslmode=verify-full');
+const path = require('path');
 
-const pool = new Pool({
-    connectionString,
-});
+const databaseMode = (process.env.DB_MODE || 'postgres').toLowerCase();
+const useLocalDatabase = databaseMode === 'local' || databaseMode === 'offline';
+let postgresPool: any = null;
+
+function getPostgresPool() {
+    if (useLocalDatabase) {
+        throw new Error('Postgres pool requested while offline mode is active');
+    }
+
+    if (!postgresPool) {
+        const dotenv = require('dotenv');
+        dotenv.config({ path: path.join(__dirname, '../../.env') });
+
+        const connectionString = (process.env.POSTGRES_URL || '').replace('sslmode=require', 'sslmode=verify-full');
+        const { Pool } = require('pg');
+        postgresPool = new Pool({
+            connectionString,
+        });
+    }
+
+    return postgresPool;
+}
 
 export class Database {
     // --- User Authentication ---
     static async createUser(username: string, passwordHash: string): Promise<number | null> {
-        const client = await pool.connect();
+        if (useLocalDatabase) {
+            return LocalDatabase.createUser(username, passwordHash);
+        }
+        const client = await getPostgresPool().connect();
         try {
             const res = await client.query(
                 `INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id`,
@@ -30,7 +52,10 @@ export class Database {
     }
 
     static async getUserByUsername(username: string): Promise<any | null> {
-        const client = await pool.connect();
+        if (useLocalDatabase) {
+            return LocalDatabase.getUserByUsername(username);
+        }
+        const client = await getPostgresPool().connect();
         try {
             const res = await client.query(`SELECT * FROM users WHERE username = $1`, [username]);
             return res.rows.length > 0 ? res.rows[0] : null;
@@ -43,7 +68,10 @@ export class Database {
     }
 
     static async getUserById(id: number): Promise<any | null> {
-        const client = await pool.connect();
+        if (useLocalDatabase) {
+            return LocalDatabase.getUserById(id);
+        }
+        const client = await getPostgresPool().connect();
         try {
             const res = await client.query(`SELECT * FROM users WHERE id = $1`, [id]);
             return res.rows.length > 0 ? res.rows[0] : null;
@@ -56,7 +84,10 @@ export class Database {
     }
 
     static async mergeGuestData(userId: number, guestSessionId: string) {
-        const client = await pool.connect();
+        if (useLocalDatabase) {
+            return LocalDatabase.mergeGuestData(userId, guestSessionId);
+        }
+        const client = await getPostgresPool().connect();
         try {
             await client.query('BEGIN');
             
@@ -75,7 +106,10 @@ export class Database {
     }
 
     static async getPlayers(userId: number | null = null, guestSessionId: string | null = null): Promise<Participant[]> {
-        const client = await pool.connect();
+        if (useLocalDatabase) {
+            return LocalDatabase.getPlayers(userId, guestSessionId);
+        }
+        const client = await getPostgresPool().connect();
         try {
             let res;
             if (userId) {
@@ -83,7 +117,7 @@ export class Database {
             } else {
                 res = await client.query('SELECT * FROM players WHERE guest_session_id = $1 ORDER BY id', [guestSessionId]);
             }
-            return res.rows.map(row => ({
+            return res.rows.map((row: any) => ({
                 id: row.id.toString(),
                 name: row.name,
                 gamesPlayed: row.games_played || 0,
@@ -103,7 +137,10 @@ export class Database {
     }
 
     static async getMatchHistory(userId: number | null = null, guestSessionId: string = 'default-guest'): Promise<Match[]> {
-        const client = await pool.connect();
+        if (useLocalDatabase) {
+            return LocalDatabase.getMatchHistory(userId, guestSessionId);
+        }
+        const client = await getPostgresPool().connect();
         try {
             let res;
             if (userId) {
@@ -111,7 +148,7 @@ export class Database {
             } else {
                 res = await client.query('SELECT * FROM matches WHERE guest_session_id = $1 ORDER BY id', [guestSessionId]);
             }
-            return res.rows.map(row => {
+            return res.rows.map((row: any) => {
                 const match: Match = {
                     id: row.id.toString(),
                     teams: row.teams,
@@ -130,7 +167,10 @@ export class Database {
     }
 
     static async saveTournament(mode: string, matches: Match[], userId: number | null = null, guestSessionId: string = 'default-guest') {
-        const client = await pool.connect();
+        if (useLocalDatabase) {
+            return LocalDatabase.saveTournament(mode, matches, userId, guestSessionId);
+        }
+        const client = await getPostgresPool().connect();
         try {
             await client.query('BEGIN');
 
@@ -225,7 +265,10 @@ export class Database {
     }
 
     static async getTournamentHistory(userId: number | null = null, guestSessionId: string = 'default-guest'): Promise<any[]> {
-        const client = await pool.connect();
+        if (useLocalDatabase) {
+            return LocalDatabase.getTournamentHistory(userId, guestSessionId);
+        }
+        const client = await getPostgresPool().connect();
         try {
             let res;
             if (userId) {
@@ -233,7 +276,7 @@ export class Database {
             } else {
                 res = await client.query('SELECT * FROM tournaments WHERE guest_session_id = $1 ORDER BY date DESC', [guestSessionId]);
             }
-            return res.rows.map(row => ({
+            return res.rows.map((row: any) => ({
                 id: row.id.toString(),
                 date: row.date ? new Date(row.date).getTime() : undefined,
                 mode: row.mode,
@@ -253,8 +296,28 @@ export class Database {
     }
 
     static async addPlayer(name: string, userId: number | null = null, guestSessionId: string = 'default-guest'): Promise<Participant> {
-        const client = await pool.connect();
+        if (useLocalDatabase) {
+            return LocalDatabase.addPlayer(name, userId, guestSessionId);
+        }
+        const client = await getPostgresPool().connect();
         try {
+            const normalizedName = name.trim().replace(/\s+/g, ' ').toLowerCase();
+            const duplicateCheck = userId
+                ? await client.query(
+                    `SELECT id FROM players WHERE user_id = $1 AND LOWER(TRIM(name)) = $2 LIMIT 1`,
+                    [userId, normalizedName]
+                )
+                : await client.query(
+                    `SELECT id FROM players WHERE guest_session_id = $1 AND LOWER(TRIM(name)) = $2 LIMIT 1`,
+                    [guestSessionId, normalizedName]
+                );
+
+            if (duplicateCheck.rows.length > 0) {
+                const duplicateError = new Error('Duplicate player name');
+                duplicateError.name = 'DuplicatePlayerNameError';
+                throw duplicateError;
+            }
+
             const res = await client.query(
                 `INSERT INTO players (user_id, guest_session_id, name) VALUES ($1, $2, $3) RETURNING id, name`,
                 [userId, guestSessionId, name]

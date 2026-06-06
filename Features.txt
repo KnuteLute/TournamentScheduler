@@ -1,0 +1,31 @@
+Ikke mulig å legge til flere spillere med samme navn.
+
+Gjør om alt sammen til Norsk
+
+Ikke mulig å starte spill med 4 uten 4 spillere
+
+Fjærn 2v2 fast, kall 2v2 roterende for 2v2 og flytt den øverst. 
+Fjern 2v2 fast fra html, ikke backend
+
+Oppdater pause-status og hopp over match samme knapp!
+
+Avslutt turnering kan være på bunn!
+
+Rød skrift over venste lag hvor det står Rødt lag
+Blå skrift over høyre lag hvor det står Blått lag
+
+
+Crazy mode
+	- Spill med feil hånd
+	- 1, 2 , -2, -1
+	- En fra hvert lag kaster sammtidig 
+	- Speed round?
+
+Log in og sign up er for vanslig å se på toppen.
+
+copyright skal være på bunn av siden, ikke i midten
+
+Når man blir ferdig med en kamp kan man står det når kampen var spilt, kanskje ha start slutt?
+
+kamera, som ser hvem som forlater rommet, og oppdaterer pause. 
+
