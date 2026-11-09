@@ -48,14 +48,16 @@ Requirements: Node.js 22+, npm, and Docker Compose for PostgreSQL.
 
    Open `http://localhost:5173/app/`. Vite proxies `/api` to Express and preserves the browser `Origin`; set local `API_ORIGIN=http://localhost:5173` in `.env`. For a production/static deployment, `API_ORIGIN` must be the exact public HTTPS site origin.
 
-The v2 API requires PostgreSQL. The old local JSON database is not an API storage adapter; local JSON records can be inspected/imported through the quarantine-aware importer. Do not select an offline mode in production.
+The v2 API requires PostgreSQL. The old local JSON database is not an API storage adapter. Do not select an offline mode in production.
 
-## Database and legacy data
+## Database and optional legacy data
+
+For the simplest V2 rollout, provision a **new empty PostgreSQL database** and point `POSTGRES_URL` at it. The V1 database can remain untouched and available for manual/reference access; V2 does not need an in-place conversion or a destructive reset. Migrations never drop or wipe an existing database.
 
 - `npm run db:migrate:status --prefix web` inspects migration state without writes.
 - `npm run db:migrate --prefix web` explicitly applies versioned schema migrations. It is not run at application startup.
-- `npm run db:import:legacy --prefix web -- --source postgres --dry-run` produces a dry-run inventory/reconciliation summary. The importer keeps unverifiable legacy guest data quarantined; it never grants access based on a raw legacy guest cookie.
-- Before any real import or production migration: take and test a backup, inspect/review the dry-run, use the documented checkpoint process, and follow [rollout/rollback guidance](docs/deployment/ci-and-rollout-plan.md). CI uses disposable databases only.
+- Legacy import is optional. `npm run db:import:legacy --prefix web -- --source postgres --dry-run` produces an inventory/reconciliation summary without writes. The importer quarantines unverifiable guest ownership; it never grants access based on a raw legacy guest cookie.
+- Only if legacy data is explicitly needed: take and test a backup, review the dry-run, and follow the checkpoint/quarantine steps in [database operations](docs/database/persistence-operations.md). Do not point V2 at an old database and assume its legacy records become available automatically. CI uses disposable databases only.
 
 ## Verification commands
 

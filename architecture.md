@@ -2,7 +2,7 @@
 
 ## Goals
 
-Upgrade the existing Express/TypeScript Tournament Scheduler into a secure, restart-safe application with a versioned REST API and a modern Vue frontend. Preserve the existing user/guest workflows, scheduler modes and tournament history while making server-side ownership and validation authoritative.
+Upgrade the existing Express/TypeScript Tournament Scheduler into a secure, restart-safe application with a versioned REST API and a modern Vue frontend. Preserve user/guest workflows and scheduler modes while making server-side ownership and validation authoritative. The v2 deployment may start with a fresh PostgreSQL database; importing the small legacy dataset is optional and is not on the critical path.
 
 ## Existing application
 
@@ -18,11 +18,10 @@ Vue 3 / TypeScript SPA
        ├── application services (tournaments, players, teams, matches)
        ├── domain (scheduling, scoring, standings, lifecycle rules)
        └── repository interfaces
-            ├── PostgreSQL + versioned SQL migrations (production)
-            └── local adapter (development/offline compatibility)
+             └── PostgreSQL + versioned SQL migrations (local and production)
 ```
 
-The backend is authoritative for identity, ownership, scheduling constraints, scores and standings. The frontend is a client only; no client-supplied owner ID, guest ID, standings, schedule validity, or match state is trusted. The REST API and rendered application must use the same application services.
+The legacy local-JSON files are supported as optional import sources, not as a v2 API database adapter. The backend is authoritative for identity, ownership, scheduling constraints, scores and standings. The frontend is a client only; no client-supplied owner ID, guest ID, standings, schedule validity, or match state is trusted. The REST API and rendered application use the same application services.
 
 ## Target repository layout
 
@@ -42,7 +41,7 @@ docs/                        API, schema, rollout, testing and security docs
 .github/workflows/           CI, integration, e2e and security checks
 ```
 
-Legacy routes and templates remain until equivalent frontend journeys are verified. No legacy data is discarded as part of the migration.
+Legacy routes are not mounted by the v2 application; their source/templates remain only as read-only legacy artifacts. An operator may leave the old database untouched and point v2 at a fresh PostgreSQL database. The legacy importer is optional, dry-run-first, and quarantines unverified guest ownership; no data is automatically wiped or imported at startup.
 
 ## Identity, sessions and ownership
 
@@ -52,7 +51,7 @@ Cookies are HttpOnly, Secure in production, and SameSite=Lax or stricter. Mutati
 
 ## Persistence and migration
 
-PostgreSQL is the source of truth in production. Migrations are additive, ordered, repeatable where feasible, and have documented backup/rollback procedures. Existing users, players, tournaments and match JSON are retained and imported with ownership mappings and reconciliation output. The offline adapter must satisfy the same repository behavior contract and must write atomically. Active tournaments are persisted; no process-global mutable state is used.
+PostgreSQL is the source of truth in v2. Migrations are ordered and versioned; use a fresh database as the simplest rollout path. The old database can remain untouched. If legacy records are imported, use the dry-run/checkpoint/quarantine tooling and review reconciliation output; never authorize legacy guest rows by raw cookie value. Local JSON helpers are restricted to single-process development/import work and are not an application storage adapter. Active tournaments are persisted; no process-global mutable state is used.
 
 The normalized player-name uniqueness rule is enforced by database constraints, scoped to owner and defined locale/normalization behavior. Mutations that affect multiple rows use transactions. Match changes use versions/ETags to reject stale edits. Standings are derived from valid completed matches so corrections cannot double-count player statistics.
 
@@ -72,7 +71,7 @@ The Vue 3 TypeScript SPA uses Vite, Vue Router and Pinia. It consumes generated 
 
 ## Quality and delivery
 
-Vitest covers domain logic and Vue components, Supertest covers API/repository integration with PostgreSQL, and Playwright covers critical user journeys. CI runs lint, type checks, contract-generation drift checks, tests, builds, dependency/security checks and migrations. GitHub Actions use least privilege, pinned third-party action revisions and no production credentials on untrusted PRs. Deployment and schema rollback are documented for the existing Vercel target; PostgreSQL is provisioned separately.
+Vitest covers Vue components, Jest covers domain logic, Supertest covers API/repository integration with disposable PostgreSQL, and Playwright covers critical user journeys. CI runs lint, type checks, contract-generation drift checks, tests, builds, dependency/security checks and migrations. GitHub Actions use least privilege, pinned third-party action revisions and no production credentials on untrusted PRs. Deployment and schema rollback are documented for the existing Vercel target; PostgreSQL is provisioned separately. No production migration or database wipe is run by application startup or PR CI.
 
 ## Release-blocking security requirements
 

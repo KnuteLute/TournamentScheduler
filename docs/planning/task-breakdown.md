@@ -40,7 +40,7 @@ Every agent commits only on its branch and opens a PR targeting `upgrade/tournam
 
 - All planning documents committed and mutually consistent.
 - Backend-authoritative identity, validation, authorization, schedules, scores and standings.
-- Persistent, owner-isolated active tournaments and migration/import path with reconciliation and rollback guidance.
+- Persistent, owner-isolated active tournaments and versioned migrations. Prefer a fresh v2 PostgreSQL database; legacy import is optional, dry-run-first and not a release blocker when the old database is left untouched.
 - Vue frontend implements requested core journeys in Norwegian by default.
 - Unit, integration, end-to-end and security tests pass.
 - CI workflows pass and use least privilege.
