@@ -566,7 +566,9 @@ paths:
         membership. It does not generate matches or mutate player statistics.
         For 1v1 and 2v2_rotating supply playerIds; for 2v2_fixed supply teamIds.
         Each mode requires distinct selected IDs and distinct canonical player
-        names; both 2v2 modes require at least four distinct roster players.
+        names; all rosters are limited to 32 distinct players. 1v1 requires at
+        least two players, rotating 2v2 at least four players, and fixed 2v2 uses
+        between two and 16 teams (at most 32 players).
         Selected fixed teams must form a disjoint partition: no player may be
         omitted or appear in more than one selected team. The server persists a
         seed and generator version for deterministic schedule replay.
@@ -613,7 +615,13 @@ paths:
       tags: [Tournaments]
       operationId: updateDraftTournament
       summary: Update a draft tournament
-      description: Only draft tournaments are editable. A started tournament's participant and mode snapshots are immutable.
+      description: |
+        Only draft tournaments are editable. A started tournament's participant
+        and mode snapshots are immutable. A name-only patch may omit mode and
+        roster. To replace a roster, include its mode and only the corresponding
+        playerIds (1v1/2v2_rotating) or teamIds (2v2_fixed); the server validates
+        the selected mode against the supplied roster and owned, disjoint team
+        membership.
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
         - $ref: '#/components/parameters/IfMatch'
@@ -1429,6 +1437,7 @@ components:
             playerIds:
               type: array
               minItems: 2
+              maxItems: 32
               uniqueItems: true
               items: { $ref: '#/components/schemas/Id' }
         - type: object
@@ -1441,6 +1450,7 @@ components:
             teamIds:
               type: array
               minItems: 2
+              maxItems: 16
               uniqueItems: true
               items: { $ref: '#/components/schemas/Id' }
         - type: object
@@ -1453,24 +1463,52 @@ components:
             playerIds:
               type: array
               minItems: 4
+              maxItems: 32
               uniqueItems: true
               items: { $ref: '#/components/schemas/Id' }
     TournamentPatch:
-      type: object
-      additionalProperties: false
-      minProperties: 1
-      properties:
-        name: { type: string, minLength: 1, maxLength: 100 }
-        playerIds:
-          type: array
-          minItems: 2
-          uniqueItems: true
-          items: { $ref: '#/components/schemas/Id' }
-        teamIds:
-          type: array
-          minItems: 2
-          uniqueItems: true
-          items: { $ref: '#/components/schemas/Id' }
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [name]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 100 }
+        - type: object
+          additionalProperties: false
+          required: [mode, playerIds]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 100 }
+            mode: { type: string, const: 1v1 }
+            playerIds:
+              type: array
+              minItems: 2
+              maxItems: 32
+              uniqueItems: true
+              items: { $ref: '#/components/schemas/Id' }
+        - type: object
+          additionalProperties: false
+          required: [mode, playerIds]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 100 }
+            mode: { type: string, const: 2v2_rotating }
+            playerIds:
+              type: array
+              minItems: 4
+              maxItems: 32
+              uniqueItems: true
+              items: { $ref: '#/components/schemas/Id' }
+        - type: object
+          additionalProperties: false
+          required: [mode, teamIds]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 100 }
+            mode: { type: string, const: 2v2_fixed }
+            teamIds:
+              type: array
+              minItems: 2
+              maxItems: 16
+              uniqueItems: true
+              items: { $ref: '#/components/schemas/Id' }
     Tournament:
       type: object
       additionalProperties: false
@@ -1482,9 +1520,11 @@ components:
         status: { $ref: '#/components/schemas/TournamentStatus' }
         participants:
           type: array
+          maxItems: 32
           items: { $ref: '#/components/schemas/TournamentParticipant' }
         pausedPlayerIds:
           type: array
+          maxItems: 32
           uniqueItems: true
           items: { $ref: '#/components/schemas/Id' }
         version: { type: integer, minimum: 1 }
@@ -1510,6 +1550,7 @@ components:
         kind: { type: string, enum: [player, team] }
         players:
           type: array
+          maxItems: 2
           items: { $ref: '#/components/schemas/PlayerSummary' }
     Schedule:
       type: object

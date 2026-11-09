@@ -269,7 +269,9 @@ export interface paths {
          *     membership. It does not generate matches or mutate player statistics.
          *     For 1v1 and 2v2_rotating supply playerIds; for 2v2_fixed supply teamIds.
          *     Each mode requires distinct selected IDs and distinct canonical player
-         *     names; both 2v2 modes require at least four distinct roster players.
+         *     names; all rosters are limited to 32 distinct players. 1v1 requires at
+         *     least two players, rotating 2v2 at least four players, and fixed 2v2 uses
+         *     between two and 16 teams (at most 32 players).
          *     Selected fixed teams must form a disjoint partition: no player may be
          *     omitted or appear in more than one selected team. The server persists a
          *     seed and generator version for deterministic schedule replay.
@@ -303,7 +305,12 @@ export interface paths {
         head?: never;
         /**
          * Update a draft tournament
-         * @description Only draft tournaments are editable. A started tournament's participant and mode snapshots are immutable.
+         * @description Only draft tournaments are editable. A started tournament's participant
+         *     and mode snapshots are immutable. A name-only patch may omit mode and
+         *     roster. To replace a roster, include its mode and only the corresponding
+         *     playerIds (1v1/2v2_rotating) or teamIds (2v2_fixed); the server validates
+         *     the selected mode against the supplied roster and owned, disjoint team
+         *     membership.
          */
         patch: operations["updateDraftTournament"];
         trace?: never;
@@ -783,9 +790,22 @@ export interface components {
             playerIds: components["schemas"]["Id"][];
         };
         TournamentPatch: {
+            name: string;
+        } | {
             name?: string;
-            playerIds?: components["schemas"]["Id"][];
-            teamIds?: components["schemas"]["Id"][];
+            /** @constant */
+            mode: "1v1";
+            playerIds: components["schemas"]["Id"][];
+        } | {
+            name?: string;
+            /** @constant */
+            mode: "2v2_rotating";
+            playerIds: components["schemas"]["Id"][];
+        } | {
+            name?: string;
+            /** @constant */
+            mode: "2v2_fixed";
+            teamIds: components["schemas"]["Id"][];
         };
         Tournament: {
             id: components["schemas"]["Id"];
