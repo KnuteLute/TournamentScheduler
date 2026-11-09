@@ -17,12 +17,16 @@ create a new token-hash/CSRF-hash session row and revoke a prior session tied to
 the same idempotency request. Resource SQL includes the verified actor's owner
 scope; foreign resource IDs return the port's not-found error. Schedule,
 lifecycle, score, and standings changes call the shared domain functions.
+Career and tournament standings are derived from normalized completed matches.
+Legacy `players` aggregate counters are retained and are not overwritten on
+normal match/result operations: quarantined or unlinked historical snapshots
+cannot reconstruct every pre-upgrade counter, so destructive cache recomputation
+is deferred until a separate baseline/adjustment migration can reconcile them.
 
 Guest transfer locks both owners, resolves all player/team name collisions
 explicitly, then updates the domain root owner IDs in one transaction.
-Composite foreign keys defer validation and cascade along a single root-to-child
-path; sibling links use deferred checks so a failed midway transfer rolls back
-without losing history or snapshots.
+All owner-bearing composite foreign keys defer validation and cascade updates.
+A failed midway transfer rolls back without losing history or snapshots.
 
 ## Migration runner
 

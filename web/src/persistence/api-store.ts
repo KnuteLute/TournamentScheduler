@@ -1565,7 +1565,6 @@ export class PostgresApiStore implements ApiStore {
       await this.persistScheduleEvents(tx,ownerId,loaded.row.id,nextMatch.sequence,[],restPlayerIds);
     }
     const updated=await this.updateTournamentState(tx,ownerId,loaded,state);
-    if(updatedMatch.status==='completed')await this.recomputePlayerStats(tx,ownerId);
     const createdAt=await this.matchCreatedAt(tx,loaded.row.id,ownerId,updatedMatch.id);
     const matchValue=this.matchValue(updatedMatch,createdAt);
     if(request.operation==='matches.recordResult'){
@@ -1613,31 +1612,6 @@ export class PostgresApiStore implements ApiStore {
     const fingerprint=createHash('sha256').update(JSON.stringify(rows)).digest('hex').slice(0,32);
     return {value:{scope:'overall',view,tournamentId:null,tournamentVersion:null,rows,
       calculatedAt:new Date().toISOString()} as T,etag:`overall-${fingerprint}`};
-  }
-
-  private async recomputePlayerStats(tx:Queryable,ownerId:string):Promise<void>{
-    await tx.execute(
-      `WITH stats AS (
-         SELECT mp.player_id,
-           count(*)::integer AS games_played,
-           count(*) FILTER (WHERE own.score>opp.score)::integer AS wins,
-           count(*) FILTER (WHERE own.score<opp.score)::integer AS losses,
-           count(*) FILTER (WHERE own.score=opp.score)::integer AS draws,
-           coalesce(sum(own.score),0)::integer AS points_for,
-           coalesce(sum(opp.score),0)::integer AS points_against
-         FROM matches m
-         JOIN match_players mp ON mp.match_id=m.id AND mp.owner_id=m.owner_id
-         JOIN match_sides own ON own.match_id=m.id AND own.side_no=mp.side_no AND own.owner_id=m.owner_id
-         JOIN match_sides opp ON opp.match_id=m.id AND opp.side_no<>mp.side_no AND opp.owner_id=m.owner_id
-         WHERE m.owner_id=$1 AND m.normalized_status='completed' AND mp.player_id IS NOT NULL
-         GROUP BY mp.player_id
-       )
-       UPDATE players p SET games_played=coalesce(s.games_played,0),wins=coalesce(s.wins,0),losses=coalesce(s.losses,0),
-         draws=coalesce(s.draws,0),points_for=coalesce(s.points_for,0),points_against=coalesce(s.points_against,0),
-         diff=coalesce(s.points_for,0)-coalesce(s.points_against,0),updated_at=now()
-       FROM (SELECT p0.id,stats.* FROM players p0 LEFT JOIN stats ON stats.player_id=p0.id WHERE p0.owner_id=$1 AND p0.deleted_at IS NULL) s
-       WHERE p.id=s.id AND p.owner_id=$1`,[ownerId],
-    );
   }
 
   async close():Promise<void>{await this.database.close();}

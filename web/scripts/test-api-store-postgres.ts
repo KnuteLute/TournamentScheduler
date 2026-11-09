@@ -103,6 +103,43 @@ async function main(): Promise<void> {
     const targetPlayerA = await mutate('players.create', accountActor, { input: { name: 'Shared Player' } });
     const targetPlayerB = await mutate('players.create', accountActor, { input: { name: 'Target Player' } });
     const targetTeam = await mutate('teams.create', accountActor, { input: { name: 'Shared Team', playerIds: [targetPlayerA.value.id, targetPlayerB.value.id] } });
+    const archivedTournamentId=randomUUID();
+    const archivedTournament=await database.query<{id:number}>(
+      `INSERT INTO tournaments (public_id,owner_id,user_id,name,mode,status,version,seed,generator_version,completed_at)
+       VALUES ($1,$2,$3,'Imported History','1v1','completed',1,'archived-seed','1',now()) RETURNING id`,
+      [archivedTournamentId,registeredOwner,Number(account!.id)],
+    );
+    const archivedTournamentRowId=archivedTournament[0]!.id;
+    const archivedMatchId=await database.query<{id:number}>(
+      `INSERT INTO matches (public_id,external_id,tournament_id,owner_id,user_id,sequence_no,round,normalized_status,status,
+        winner_side,version,teams,mode,end_time,completed_at)
+       VALUES ($1,$2,$3,$4,$5,1,1,'completed','completed',1,1,$6::jsonb,'1v1',now(),now()) RETURNING id`,
+      [randomUUID(),`unverified-${randomUUID()}`,archivedTournamentRowId,registeredOwner,Number(account!.id),JSON.stringify([
+        {id:'legacy-side-1',participants:[{id:'unknown-old-player',name:'Unresolved Snapshot'}],score:4},
+        {id:'legacy-side-2',participants:[{id:String(targetPlayerB.value.id),name:'Target Player'}],score:2},
+      ])],
+    );
+    const archivedMatchRowId=archivedMatchId[0]!.id;
+    for(let sideNo=1;sideNo<=2;sideNo++)await database.execute(
+      `INSERT INTO match_sides (match_id,tournament_id,owner_id,side_no,score,side_label,side_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [archivedMatchRowId,archivedTournamentRowId,registeredOwner,sideNo,sideNo===1?4:2,`Archived ${sideNo}`,`legacy-side-${sideNo}`],
+    );
+    await database.execute(
+      `INSERT INTO match_players (match_id,side_no,tournament_id,owner_id,position,player_id,enrollment_id,player_name_snapshot)
+       VALUES ($1,1,$2,$3,1,NULL,NULL,'Unresolved Snapshot'),($1,2,$2,$3,1,$4,NULL,'Target Player')`,
+      [archivedMatchRowId,archivedTournamentRowId,registeredOwner,Number(targetPlayerB.value.id)],
+    );
+    const legacyStatBaseline={games_played:71,wins:20,losses:12,draws:39,points_for:333,points_against:321,diff:12};
+    await database.execute(
+      `UPDATE players SET games_played=$1,wins=$2,losses=$3,draws=$4,points_for=$5,points_against=$6,diff=$7 WHERE id=$8 AND owner_id=$9`,
+      [legacyStatBaseline.games_played,legacyStatBaseline.wins,legacyStatBaseline.losses,legacyStatBaseline.draws,
+        legacyStatBaseline.points_for,legacyStatBaseline.points_against,legacyStatBaseline.diff,Number(targetPlayerA.value.id),registeredOwner],
+    );
+    const unresolvedSnapshot=await database.query<{count:string}>(
+      `SELECT count(*)::text count FROM match_players WHERE match_id=$1 AND player_id IS NULL AND player_name_snapshot='Unresolved Snapshot'`,[archivedMatchRowId],
+    );
+    assert.strictEqual(Number(unresolvedSnapshot[0]?.count),1);
     const guestSessionHash = randomBytes(32);
     await call(request('session.createGuest', null, { credentials: { ...credential(), sessionTokenHash: guestSessionHash } }));
     const guestSession = await store.lookupSessionByTokenHash(guestSessionHash, new Date());
@@ -221,6 +258,11 @@ async function main(): Promise<void> {
     const matchResumed=await mutate('matches.resume',actor,{resourceId:String(tournament.value.id),matchId,expectedETag:`"${matchPaused.etag}"`});
     const scored=await mutate('matches.recordResult',actor,{resourceId:String(tournament.value.id),matchId,expectedETag:`"${matchResumed.etag}"`,input:{scores:[4,2]}});
     assert.ok(scored.value.match);
+    const statsAfterResult=await database.query<typeof legacyStatBaseline>(
+      `SELECT games_played,wins,losses,draws,points_for,points_against,diff FROM players WHERE id=$1 AND owner_id=$2`,
+      [Number(targetPlayerA.value.id),registeredOwner],
+    );
+    assert.deepStrictEqual(statsAfterResult[0],legacyStatBaseline,'new results must not overwrite unreconstructible legacy aggregates');
     await mutate('tournaments.updateAvailability',actor,{resourceId:String(tournament.value.id),expectedETag:`"${scored.etag}"`,input:{pausedPlayerIds:[]}});
     const secondMatch=String((await database.query<{external_id:string}>(`SELECT external_id FROM matches WHERE tournament_id=(SELECT id FROM tournaments WHERE public_id=$1::uuid) ORDER BY sequence_no OFFSET 1 LIMIT 1`,[tournament.value.id]))[0]?.external_id);
     const versionBeforeSkip=await call(request('tournaments.get',actor,{resourceId:String(tournament.value.id)}));
