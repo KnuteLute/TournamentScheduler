@@ -1,6 +1,7 @@
 import bcrypt from "bcrypt";
 import express, { type NextFunction, type Request, type Response, type Router } from "express";
 import { createHmac, randomUUID } from "node:crypto";
+import { isIP } from "node:net";
 import type { ApiConfig } from "../config/api";
 import {
 	constantTimeEqual,
@@ -16,7 +17,7 @@ import {
 	problemMiddleware,
 	sendProblem,
 } from "./problem";
-import { bodyValidators, validateQuery, type JsonObject } from "./validation";
+import { bodyValidators, validateQuery, validateTournamentPatch, type JsonObject, type TournamentMode } from "./validation";
 import { StoreUnavailableError } from "../services/ports";
 import type {
 	ApiStore,
@@ -181,15 +182,89 @@ function asyncRoute(handler: (req: Request, res: Response, next: NextFunction) =
 	};
 }
 
+function parseIpv6Bytes(value: string): number[] | undefined {
+	if (value.includes("%")) return undefined;
+	let address = value.toLowerCase();
+	if (address.includes(".")) {
+		const separator = address.lastIndexOf(":");
+		if (separator < 0) return undefined;
+		const ipv4 = address.slice(separator + 1);
+		if (isIP(ipv4) !== 4) return undefined;
+		const octets = ipv4.split(".").map(Number);
+		const high = ((octets[0] ?? 0) << 8) | (octets[1] ?? 0);
+		const low = ((octets[2] ?? 0) << 8) | (octets[3] ?? 0);
+		address = `${address.slice(0, separator + 1)}${high.toString(16)}:${low.toString(16)}`;
+	}
+	const marker = address.indexOf("::");
+	let groups: string[];
+	if (marker >= 0) {
+		if (address.indexOf("::", marker + 2) >= 0) return undefined;
+		const left = address.slice(0, marker).split(":").filter(Boolean);
+		const right = address.slice(marker + 2).split(":").filter(Boolean);
+		const zeros = 8 - left.length - right.length;
+		if (zeros < 1) return undefined;
+		groups = [...left, ...Array.from({ length: zeros }, () => "0"), ...right];
+	} else {
+		groups = address.split(":");
+		if (groups.length !== 8) return undefined;
+	}
+	if (groups.length !== 8 || groups.some((group) => !/^[a-f\d]{1,4}$/.test(group))) return undefined;
+	const bytes: number[] = [];
+	for (const group of groups) {
+		const number = Number.parseInt(group, 16);
+		bytes.push((number >> 8) & 0xff, number & 0xff);
+	}
+	return bytes;
+}
+
+function normalizeIpAddress(value: string): string | undefined {
+	const address = value.trim();
+	const family = isIP(address);
+	if (family === 4) return address;
+	if (family !== 6) return undefined;
+	const bytes = parseIpv6Bytes(address);
+	if (!bytes) return undefined;
+	const ipv4Mapped = bytes.slice(0, 10).every((part) => part === 0) && bytes[10] === 0xff && bytes[11] === 0xff;
+	if (ipv4Mapped) return bytes.slice(12).join(".");
+	const groups: string[] = [];
+	for (let index = 0; index < 16; index += 2) {
+		groups.push((((bytes[index] ?? 0) << 8) | (bytes[index + 1] ?? 0)).toString(16));
+	}
+	return groups.join(":");
+}
+
+function rateLimitClientAddress(req: Request, trustedProxyHops: number): string {
+	const peer = normalizeIpAddress(req.socket.remoteAddress ?? "");
+	if (!peer) fail(400, "invalid-client-address", "Bad Request", "The network peer address is invalid.");
+	if (trustedProxyHops === 0) return peer;
+	const forwardedFor = req.get("X-Forwarded-For");
+	if (!forwardedFor || forwardedFor.length > 2048) {
+		fail(400, "invalid-forwarded-chain", "Bad Request", "The trusted proxy chain is missing or too long.");
+	}
+	const chain = forwardedFor.split(",").map((address) => address.trim());
+	if (chain.length > 32 || chain.length < trustedProxyHops) {
+		fail(400, "invalid-forwarded-chain", "Bad Request", "The trusted proxy chain has an invalid number of hops.");
+	}
+	// Proxies append to the right; ignore any untrusted left-most prefix by
+	// counting the configured trusted hop boundary from the right edge.
+	const client = normalizeIpAddress(chain[chain.length - trustedProxyHops] ?? "");
+	if (!client) fail(400, "invalid-forwarded-chain", "Bad Request", "The trusted proxy chain contains an invalid address.");
+	return client;
+}
+
 function addRateLimit(router: Router, store: ApiStore, config: ApiConfig): void {
 	router.use((req, res, next) => {
-		if (req.path === "/health") {
+		if (req.path === "/health/live" || req.path === "/health/ready") {
 			next();
 			return;
 		}
-		// Deliberately use the TCP peer. X-Forwarded-For is attacker-controlled
-		// unless the host configures a trusted proxy chain, which this router does not.
-		const peer = req.socket.remoteAddress ?? "unknown";
+		let peer: string;
+		try {
+			peer = rateLimitClientAddress(req, config.trustedProxyHops);
+		} catch (error) {
+			next(error);
+			return;
+		}
 		const auth = req.path === "/auth/login" || req.path === "/auth/register";
 		const bucketHash = createHmac("sha256", config.sessionHashSecret)
 			.update(`rate-network:${auth ? "auth" : "api"}:${peer}`)
@@ -236,6 +311,7 @@ export function createApiRouter(store: ApiStore, config: ApiConfig): Router {
 		!Number.isSafeInteger(config.rateLimitWindowMs) || config.rateLimitWindowMs < 1000 || config.rateLimitWindowMs > 60 * 60 * 1000 ||
 		!Number.isSafeInteger(config.rateLimitMax) || config.rateLimitMax < 1 || config.rateLimitMax > 10_000 ||
 		!Number.isSafeInteger(config.loginRateLimitMax) || config.loginRateLimitMax < 1 || config.loginRateLimitMax > 1000 ||
+		!Number.isSafeInteger(config.trustedProxyHops) || config.trustedProxyHops < 0 || config.trustedProxyHops > 8 ||
 		!Number.isSafeInteger(config.bcryptRounds) || config.bcryptRounds < 10 || config.bcryptRounds > 15) {
 		throw new Error("Invalid API security limits");
 	}
@@ -250,11 +326,11 @@ export function createApiRouter(store: ApiStore, config: ApiConfig): Router {
 		if (config.production) res.set("Strict-Transport-Security", "max-age=31536000");
 		next();
 	});
-	addRateLimit(router, store, config);
 	router.use((req, _res, next) => {
 		req.traceId = randomUUID();
 		next();
 	});
+	addRateLimit(router, store, config);
 	router.use((req, _res, next) => {
 		const hasBody = Number(req.get("Content-Length") ?? 0) > 0 || Boolean(req.get("Transfer-Encoding"));
 		if ((req.method === "GET" || req.method === "HEAD") && hasBody) {
@@ -279,11 +355,16 @@ export function createApiRouter(store: ApiStore, config: ApiConfig): Router {
 		strict: true,
 		type: ["application/json", "application/merge-patch+json"],
 	}));
-	router.use(asyncRoute(async (req, _res, next) => {
+	router.use(asyncRoute(async (req, res, next) => {
+		if (req.path === "/health/live" || req.path === "/health/ready") {
+			next();
+			return;
+		}
 		const parsed = readSessionCookie(req.headers.cookie);
 		req.apiCookiePresent = parsed.present;
 		if (parsed.value) req.apiCredential = parsed.value;
 		if (parsed.present && !parsed.value) {
+			res.set("Set-Cookie", expiredSessionCookie());
 			// An invalid/present credential is never treated as an anonymous bootstrap.
 			if (req.path === "/auth/login" || req.path === "/auth/register" || req.path === "/sessions") {
 				fail(401, "unauthorized", "Unauthorized", "The supplied session is invalid.");
@@ -292,6 +373,7 @@ export function createApiRouter(store: ApiStore, config: ApiConfig): Router {
 		if (parsed.value) {
 			const found = await store.lookupSessionByTokenHash(protectedHash(parsed.value, config), new Date());
 			if (!found || found.revokedAt || found.expiresAt.getTime() <= Date.now()) {
+				res.set("Set-Cookie", expiredSessionCookie());
 				if (req.path === "/auth/login" || req.path === "/auth/register" || req.path === "/sessions") {
 					fail(401, "unauthorized", "Unauthorized", "The supplied session is invalid.");
 				}
@@ -366,9 +448,22 @@ export function createApiRouter(store: ApiStore, config: ApiConfig): Router {
 			requireSession(req);
 			if (options.mutating) csrfCheck(req, config, false);
 			if (options.body && req.body === undefined) fail(400, "body-required", "Bad Request", "A JSON request body is required.");
+			const resourceId = options.resourceParam ? validatePathId(req.params[options.resourceParam], options.resourceParam) : undefined;
+			const matchId = options.matchParam ? validatePathId(req.params[options.matchParam], options.matchParam) : undefined;
 			const bodyValidator = bodyValidators[operation];
-			const input = bodyValidator ? bodyValidator(req.body) : undefined;
-			if (options.body && !bodyValidator) fail(500, "internal-error", "Internal Server Error");
+			let input: JsonObject | undefined;
+			if (operation === "tournaments.updateDraft") {
+				if (!resourceId) fail(500, "internal-error", "Internal Server Error");
+				expectedETag(req, true);
+				const tournament = await run<{ mode?: unknown }>(req, "tournaments.get", { resourceId });
+				if (tournament.value.mode !== "1v1" && tournament.value.mode !== "2v2_fixed" && tournament.value.mode !== "2v2_rotating") {
+					throw new StoreUnavailableError();
+				}
+				input = validateTournamentPatch(req.body, tournament.value.mode as TournamentMode);
+			} else {
+				input = bodyValidator ? bodyValidator(req.body) : undefined;
+			}
+			if (options.body && !bodyValidator && operation !== "tournaments.updateDraft") fail(500, "internal-error", "Internal Server Error");
 			const query = options.query ? validateQuery(queryObject(req), options.query) : undefined;
 			if (query?.status) {
 				const values = query.status as readonly string[];
@@ -383,8 +478,6 @@ export function createApiRouter(store: ApiStore, config: ApiConfig): Router {
 				fail(400, "missing-query", "Bad Request", `${options.requiredQuery} is required.`);
 			}
 			if (query && options.query && options.query.includes("limit") && query.limit === undefined) query.limit = 25;
-			const resourceId = options.resourceParam ? validatePathId(req.params[options.resourceParam], options.resourceParam) : undefined;
-			const matchId = options.matchParam ? validatePathId(req.params[options.matchParam], options.matchParam) : undefined;
 			const result = await run(req, operation, {
 				...(input === undefined ? {} : { body: input }),
 				...(query === undefined ? {} : { query }),
@@ -401,8 +494,12 @@ export function createApiRouter(store: ApiStore, config: ApiConfig): Router {
 		}));
 	};
 
-	router.get("/health", asyncRoute(async (_req, res) => {
+	router.get("/health/live", (_req, res) => {
+		res.set("Cache-Control", "no-store").status(200).json({ status: "ok" });
+	});
+	router.get("/health/ready", asyncRoute(async (_req, res) => {
 		const healthy = store.healthCheck ? await store.healthCheck() : false;
+		res.set("Cache-Control", "no-store");
 		if (!healthy) {
 			sendProblem(res, new ApiProblem(503, "service-unavailable", "Service Unavailable", "The API data service is unavailable."));
 			return;
@@ -442,6 +539,16 @@ export function createApiRouter(store: ApiStore, config: ApiConfig): Router {
 			fail(401, "unauthorized", "Unauthorized", "The supplied session is invalid.");
 		}
 		res.json({ ...((publicRepresentation(result.value) as Record<string, unknown> | null) ?? {}), kind: session.kind, account: session.account, csrfToken, expiresAt: session.expiresAt.toISOString(), pendingGuestClaim: session.pendingGuestClaim });
+	}));
+
+	router.get("/session/claim", asyncRoute(async (req, res) => {
+		const session = requireSession(req);
+		res.set("Cache-Control", "no-store");
+		if (session.kind !== "authenticated" || !session.pendingGuestClaim) {
+			fail(404, "not-found", "Not Found", "No pending claim is available for this session.");
+		}
+		const result = await run(req, "session.getClaimDetails");
+		sendResult(res, { ...result, etag: `v${session.version}` }, result.status ?? 200, true);
 	}));
 
 	const revoke = asyncRoute(async (req, res) => {

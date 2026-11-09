@@ -43,6 +43,7 @@ export interface AccountCredential {
 export type StoreOperation =
 	| "session.createGuest"
 	| "session.get"
+	| "session.getClaimDetails"
 	| "session.revoke"
 	| "session.claimGuest"
 	| "auth.register"
@@ -149,6 +150,8 @@ export interface ApiStore {
 	 * row from the newly supplied hashes; it must never replay a raw old secret.
 	 * The adapter owns SQL transactions, constraints, and domain-level
 	 * authorization checks; it must never use process-global state as a fallback.
+	 * `session.getClaimDetails` must only return conflicts for the pending guest
+	 * owner already bound to this authenticated actor, never a caller-selected ID.
 	 */
 	execute<T = unknown>(request: StoreRequest): Promise<StoreResult<T>>;
 	/** Lightweight, read-only dependency check used only by the API health route. */

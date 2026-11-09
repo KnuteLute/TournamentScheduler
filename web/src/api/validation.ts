@@ -112,26 +112,15 @@ export const bodyValidators: Readonly<Record<string, Validator>> = {
 		const body = object(raw);
 		if (body.mode === "1v1" || body.mode === "2v2_rotating") {
 			exact(body, ["name", "mode", "seed", "playerIds"], ["name", "mode", "playerIds"]);
-			const roster = ids(body.playerIds, "/playerIds", body.mode === "1v1" ? 2 : 4, 200);
+			const roster = ids(body.playerIds, "/playerIds", body.mode === "1v1" ? 2 : 4, 32);
 			return { name: name(body.name, "/name", 100), mode: body.mode, playerIds: roster, ...(body.seed === undefined ? {} : { seed: boundedString(body.seed, "/seed", 1, 128) }) };
 		}
 		if (body.mode === "2v2_fixed") {
 			exact(body, ["name", "mode", "seed", "teamIds"], ["name", "mode", "teamIds"]);
-			const teams = ids(body.teamIds, "/teamIds", 2, 100);
+			const teams = ids(body.teamIds, "/teamIds", 2, 16);
 			return { name: name(body.name, "/name", 100), mode: body.mode, teamIds: teams, ...(body.seed === undefined ? {} : { seed: boundedString(body.seed, "/seed", 1, 128) }) };
 		}
 		invalid("/mode", "enum", "Mode must be 1v1, 2v2_fixed, or 2v2_rotating.");
-	},
-	"tournaments.updateDraft": (raw) => {
-		const body = object(raw);
-		exact(body, ["name", "playerIds", "teamIds"]);
-		if (!Object.keys(body).length) invalid("", "min-properties", "At least one field is required.");
-		const result: JsonObject = {};
-		if ("name" in body) result.name = name(body.name, "/name", 100);
-		if ("playerIds" in body) result.playerIds = ids(body.playerIds, "/playerIds", 2, 200);
-		if ("teamIds" in body) result.teamIds = ids(body.teamIds, "/teamIds", 2, 100);
-		if ("playerIds" in result && "teamIds" in result) invalid("", "exclusive-fields", "Supply playerIds or teamIds, not both.");
-		return result;
 	},
 	"tournaments.deleteDraft": noBody,
 	"tournaments.start": noBody,
@@ -142,7 +131,7 @@ export const bodyValidators: Readonly<Record<string, Validator>> = {
 	"tournaments.updateAvailability": (raw) => {
 		const body = object(raw);
 		exact(body, ["pausedPlayerIds"], ["pausedPlayerIds"]);
-		return { pausedPlayerIds: ids(body.pausedPlayerIds, "/pausedPlayerIds", 0, 200) };
+		return { pausedPlayerIds: ids(body.pausedPlayerIds, "/pausedPlayerIds", 0, 32) };
 	},
 	"matches.start": noBody,
 	"matches.pause": noBody,
@@ -161,6 +150,25 @@ export const bodyValidators: Readonly<Record<string, Validator>> = {
 		return { scores };
 	},
 };
+
+export type TournamentMode = "1v1" | "2v2_fixed" | "2v2_rotating";
+
+/** Validate roster fields against the persisted draft mode, not client mode claims. */
+export function validateTournamentPatch(raw: unknown, mode: TournamentMode): JsonObject {
+	const body = object(raw);
+	exact(body, ["name", "playerIds", "teamIds"]);
+	if (!Object.keys(body).length) invalid("", "min-properties", "At least one field is required.");
+	const result: JsonObject = {};
+	if ("name" in body) result.name = name(body.name, "/name", 100);
+	if (mode === "2v2_fixed") {
+		if ("playerIds" in body) invalid("/playerIds", "mode-field", "Fixed-team tournaments use teamIds.");
+		if ("teamIds" in body) result.teamIds = ids(body.teamIds, "/teamIds", 2, 16);
+	} else {
+		if ("teamIds" in body) invalid("/teamIds", "mode-field", "Player-roster tournaments use playerIds.");
+		if ("playerIds" in body) result.playerIds = ids(body.playerIds, "/playerIds", mode === "1v1" ? 2 : 4, 32);
+	}
+	return result;
+}
 
 function credentials(raw: unknown): JsonObject {
 	const body = object(raw);

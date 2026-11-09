@@ -10,6 +10,7 @@ export interface ApiConfig {
 	rateLimitMax: number;
 	loginRateLimitMax: number;
 	bcryptRounds: number;
+	trustedProxyHops: number;
 }
 
 const decodeSecret = (value: string): Uint8Array => {
@@ -58,5 +59,6 @@ export function createApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig
 		rateLimitMax: numberSetting("API_RATE_MAX", 120, 1, 10_000),
 		loginRateLimitMax: numberSetting("API_AUTH_RATE_MAX", 10, 1, 1000),
 		bcryptRounds: numberSetting("API_BCRYPT_ROUNDS", production ? 12 : 10, 10, 15),
+		trustedProxyHops: numberSetting("API_TRUSTED_PROXY_HOPS", 0, 0, 8),
 	};
 }
