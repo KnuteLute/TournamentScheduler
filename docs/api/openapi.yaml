@@ -275,7 +275,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Credentials' }
+            schema: { $ref: '#/components/schemas/RegisterCredentials' }
       responses:
         '201':
           description: Account and authenticated session created.
@@ -316,7 +316,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Credentials' }
+            schema: { $ref: '#/components/schemas/LoginCredentials' }
       responses:
         '200':
           description: Authenticated session established.
@@ -1383,13 +1383,30 @@ components:
       properties:
         id: { $ref: '#/components/schemas/Id' }
         username: { type: string, minLength: 3, maxLength: 64 }
-    Credentials:
+    RegisterCredentials:
       type: object
       additionalProperties: false
       required: [username, password]
       properties:
         username: { type: string, minLength: 3, maxLength: 64 }
-        password: { type: string, minLength: 12, maxLength: 128, format: password }
+        password:
+          type: string
+          minLength: 12
+          maxLength: 72
+          format: password
+          description: New account passwords require at least 12 characters. The server additionally rejects passwords over 72 UTF-8 bytes before bcrypt; no truncation is allowed.
+    LoginCredentials:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 64 }
+        password:
+          type: string
+          minLength: 1
+          maxLength: 72
+          format: password
+          description: Accept legacy account passwords shorter than the registration minimum. The server rejects passwords over 72 UTF-8 bytes before bcrypt; no truncation is allowed.
     TransferSummary:
       type: object
       additionalProperties: false
