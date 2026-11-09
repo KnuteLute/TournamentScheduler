@@ -18,7 +18,7 @@
     "build": "npm run build --prefix packages/contracts && npm run build --prefix web && npm run build --prefix frontend",
     "typecheck": "npm run typecheck --prefix packages/contracts && npm run typecheck --prefix web && npm run typecheck --prefix frontend",
     "test:unit": "jest --config jest.config.js --runInBand && npm run test:unit --prefix web && npm test --prefix frontend",
-    "test:integration": "jest --config jest.integration.config.js --runInBand",
+    "test:integration": "jest --config jest.integration.config.js --runInBand && npm run test:api-store --prefix web && npm run test:rate-limit-postgres --prefix web",
     "test:security": "jest --config jest.security.config.js --runInBand",
     "test:e2e": "playwright test --config=playwright.config.ts",
     "test": "npm run test:unit && npm run test:integration && npm run test:security && npm run test:e2e",

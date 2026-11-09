@@ -14,6 +14,8 @@
     "test:legacy": "ts-node src/lib/scheduler.test.ts",
     "test:api": "ts-node src/api/router.test.ts",
     "test:persistence": "ts-node src/persistence/persistence.test.ts",
+    "test:api-store": "ts-node scripts/test-api-store-postgres.ts",
+    "test:rate-limit-postgres": "ts-node scripts/test-rate-limit-postgres.ts",
     "test:unit": "npm run test:legacy && npm run test:api && npm run test:persistence",
     "test": "npm run test:unit"
   },
