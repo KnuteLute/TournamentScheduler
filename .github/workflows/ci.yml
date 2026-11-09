@@ -119,6 +119,7 @@ jobs:
       API_ORIGIN: http://127.0.0.1:4173
       API_SESSION_HASH_SECRET: Y2ktb25seSBzeW50aGV0aWMgc2Vzc2lvbiBoYXNoIHNlY3JldCBmb3IgZGlzcG9zYWJsZSB0ZXN0cyAzMiBieXRlcw
       API_TRUSTED_PROXY_HOPS: "0"
+      TEST_ACCOUNT_PASSWORD: ci-only-guest-transfer-test-password-2026
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6.1.0
         with:
@@ -184,6 +185,7 @@ jobs:
       API_ORIGIN: http://127.0.0.1:4173
       API_SESSION_HASH_SECRET: Y2ktb25seSBzeW50aGV0aWMgc2Vzc2lvbiBoYXNoIHNlY3JldCBmb3IgZGlzcG9zYWJsZSB0ZXN0cyAzMiBieXRlcw
       API_TRUSTED_PROXY_HOPS: "0"
+      TEST_ACCOUNT_PASSWORD: ci-only-guest-transfer-test-password-2026
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6.1.0
         with:
