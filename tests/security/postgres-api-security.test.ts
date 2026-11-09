@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
-
-const request = require("supertest");
-const { Pool } = require("pg");
+import { Pool } from "pg";
+import request from "supertest";
+import { beforeAll, describe, expect, jest, test } from "@jest/globals";
 
 const postgresUrl = process.env.POSTGRES_URL;
 const databaseName = process.env.TEST_DATABASE_NAME;
@@ -12,7 +12,13 @@ const localPostgresApiEnabled = Boolean(
 );
 const describeLocalPostgresApi = localPostgresApiEnabled
   ? describe
-  : (describe as unknown as { skip: typeof describe }).skip;
+  : describe.skip;
+
+function cookieValues(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+}
 
 function origin(): string {
   if (!apiOrigin) throw new Error("TEST_API_ORIGIN is required for the local API security tests");
@@ -27,7 +33,7 @@ function key(): string {
   return randomUUID();
 }
 
-async function registerOwner(): Promise<{ cookie: string; csrf: string; accountId: string }> {
+async function registerOwner(): Promise<{ cookie: string; csrf: string }> {
   const base = origin();
   if (!testPassword) throw new Error("TEST_ACCOUNT_PASSWORD is required");
   const response = await request(base)
@@ -37,18 +43,21 @@ async function registerOwner(): Promise<{ cookie: string; csrf: string; accountI
     .set("Idempotency-Key", key())
     .send({ username: `security_${randomUUID().replace(/-/g, "").slice(0, 20)}`, password: testPassword });
   expect(response.status).toBe(201);
-  const setCookie = response.headers["set-cookie"];
-  const cookies = Array.isArray(setCookie) ? setCookie : setCookie ? [setCookie] : [];
-  const header = cookies.find((value: string) => value.startsWith("__Host-ts_session="));
+  const header = cookieValues(response.headers["set-cookie"])
+    .find((value) => value.startsWith("__Host-ts_session="));
   if (!header) throw new Error("Registration did not set an authenticated session cookie");
   return {
     cookie: header.split(";", 1)[0],
     csrf: response.body.session.csrfToken,
-    accountId: response.body.session.account.id,
   };
 }
 
-function mutate(client: { cookie: string; csrf: string }, method: "post" | "patch" | "delete", path: string, body?: unknown) {
+function mutate(
+  client: { cookie: string; csrf: string },
+  method: "post" | "patch" | "delete",
+  path: string,
+  body?: Record<string, unknown>,
+) {
   const base = origin();
   let test = request(base)[method](`/api/v1${path}`)
     .set("Cookie", client.cookie)
@@ -135,7 +144,7 @@ describeLocalPostgresApi("security checks against the isolated PostgreSQL API", 
       .set("Sec-Fetch-Site", "same-origin")
       .set("Cookie", `__Host-ts_session=${fabricated}`);
     expect(forged.status).toBe(401);
-    expect(forged.headers["set-cookie"]?.[0]).toMatch(/^__Host-ts_session=;/);
+    expect(cookieValues(forged.headers["set-cookie"])[0]).toMatch(/^__Host-ts_session=;/);
     expect(forged.body).not.toHaveProperty("csrfToken");
 
     const session = await registerOwner();
@@ -147,11 +156,11 @@ describeLocalPostgresApi("security checks against the isolated PostgreSQL API", 
       .set("X-CSRF-Token", session.csrf)
       .set("Idempotency-Key", key())
       .expect(204);
-    expect(revoked.headers["set-cookie"]?.[0]).toMatch(/^__Host-ts_session=;/);
+    expect(cookieValues(revoked.headers["set-cookie"])[0]).toMatch(/^__Host-ts_session=;/);
 
     const replay = await request(base).get("/api/v1/session").set("Cookie", session.cookie);
     expect(replay.status).toBe(401);
-    expect(replay.headers["set-cookie"]?.[0]).toMatch(/^__Host-ts_session=;/);
+    expect(cookieValues(replay.headers["set-cookie"])[0]).toMatch(/^__Host-ts_session=;/);
   });
 
   test("a guest bootstrap creates and persists a server-issued capability", async () => {
@@ -161,7 +170,8 @@ describeLocalPostgresApi("security checks against the isolated PostgreSQL API", 
       .set("Origin", base)
       .set("Sec-Fetch-Site", "same-origin");
     expect(created.status).toBe(201);
-    const cookie = (created.headers["set-cookie"] as string[]).find((value) => value.startsWith("__Host-ts_session="));
+    const cookie = cookieValues(created.headers["set-cookie"])
+      .find((value) => value.startsWith("__Host-ts_session="));
     expect(cookie).toBeDefined();
     const session = await request(base).get("/api/v1/session").set("Cookie", cookie!.split(";", 1)[0]);
     expect(session.status).toBe(200);
