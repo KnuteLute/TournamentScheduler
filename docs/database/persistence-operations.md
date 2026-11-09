@@ -34,6 +34,9 @@ advisory lock, and applies each migration transactionally. A checksum mismatch,
 partial legacy schema, or database version unknown to the checked-out code is a
 hard failure; the runner does not attempt to repair or reset a schema. The
 script is operator-invoked only and is never run during application startup.
+The persistence CLI commands load the repository-root `.env` quietly before
+reading `POSTGRES_URL`; existing process/Vercel variables take precedence, and
+no environment values are printed.
 
 ```sh
 cd web

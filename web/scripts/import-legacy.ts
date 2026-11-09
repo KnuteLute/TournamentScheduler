@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { PostgresDatabase } from '../src/persistence/database';
+import { loadPersistenceEnvironment } from '../src/persistence/environment';
 import { DEFAULT_POSTGRES_IMPORT_BATCH_SIZE, importLegacyPostgres, inspectLocalJson, MAX_LOCAL_IMPORT_BYTES, MAX_POSTGRES_IMPORT_BATCH_SIZE, reconcileLegacyData } from '../src/persistence/legacy-import';
 
 interface Options {
@@ -56,6 +57,7 @@ function parseArgs(args: string[]): Options {
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const needsDatabase = options.reconcile || options.source === 'postgres' || options.apply;
+  if (needsDatabase) loadPersistenceEnvironment();
   const db = needsDatabase ? new PostgresDatabase() : null;
   try {
     if (options.reconcile) {

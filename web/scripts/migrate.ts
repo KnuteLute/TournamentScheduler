@@ -1,7 +1,9 @@
 import * as path from 'path';
 import { applyMigrations, migrationStatus } from '../src/persistence/migrations';
+import { loadPersistenceEnvironment } from '../src/persistence/environment';
 
 async function main(): Promise<void> {
+  loadPersistenceEnvironment();
   const args=process.argv.slice(2);
   if(args.some(arg=>!['--apply','--status','--dry-run'].includes(arg))||args.includes('--apply')&&(args.includes('--status')||args.includes('--dry-run'))){
     throw new Error('Use either --apply or --status; default mode is read-only status.');

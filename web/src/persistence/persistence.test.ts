@@ -11,6 +11,7 @@ import { consumeRateLimitBucket, pruneExpiredRateLimitBuckets } from './rate-lim
 import { createPostgresApiStore, serializePlayerResponse, serializeStandingRows, serializeTeamResponse } from './api-store';
 import { DEFAULT_POSTGRES_IMPORT_BATCH_SIZE, MAX_POSTGRES_IMPORT_BATCH_SIZE } from './legacy-import';
 import { computeTournamentStandings } from '../domain/standings';
+import { loadPersistenceEnvironment } from './environment';
 
 export async function runPersistenceUnitTests(): Promise<void> {
   assert.strictEqual(canonicalizeName('  Straße\tTEAM  '), 'strasse team');
@@ -73,6 +74,23 @@ export async function runPersistenceUnitTests(): Promise<void> {
 
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'tournament-persistence-'));
   try {
+    await fs.writeFile(path.join(directory,'.env'),[
+      'POSTGRES_URL=postgres://localhost/dotenv_test',
+      'DB_POOL_MAX=4',
+      'PERSISTENCE_ENV_SENTINEL=loaded',
+      '',
+    ].join('\n'));
+    const injectedEnv={POSTGRES_URL:'postgres://localhost/runtime_test',DB_POOL_MAX:'2'} as NodeJS.ProcessEnv;
+    loadPersistenceEnvironment(injectedEnv,directory);
+    assert.strictEqual(injectedEnv.POSTGRES_URL,'postgres://localhost/runtime_test','runtime env must override .env');
+    assert.strictEqual(injectedEnv.DB_POOL_MAX,'2','runtime pool setting must override .env');
+    assert.strictEqual(injectedEnv.PERSISTENCE_ENV_SENTINEL,'loaded','missing runtime settings load from repository .env');
+    const emptyEnv={} as NodeJS.ProcessEnv;
+    const emptyDirectory=path.join(directory,'without-env');
+    await fs.mkdir(emptyDirectory);
+    loadPersistenceEnvironment(emptyEnv,emptyDirectory);
+    assert.throws(()=>postgresPoolConfig(emptyEnv),/POSTGRES_URL is required/);
+
     const file = new AtomicLocalJsonFile<{ value: number }>(directory, 'data.json');
     assert.strictEqual(await file.read(), null);
     await file.write({ value: 1 });

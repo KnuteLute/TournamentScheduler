@@ -1,5 +1,6 @@
 export * from './api-store';
 export * from './database';
+export * from './environment';
 export * from './legacy-import';
 export * from './local-json';
 export * from './migrations';
