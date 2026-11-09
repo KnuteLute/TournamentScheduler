@@ -5,7 +5,8 @@ import { PostgresApiStore } from '../src/persistence/api-store';
 import { PostgresDatabase, postgresPoolConfig } from '../src/persistence/database';
 import { canonicalizeName } from '../src/domain/names';
 import httpRequest = require('supertest');
-import { createApplication } from '../src/app';
+import express = require('express');
+import { createApiRouter } from '../src/api/router';
 import { createApiConfig } from '../src/config/api';
 
 type Actor = VerifiedActor;
@@ -48,6 +49,8 @@ async function main(): Promise<void> {
 
   const database = new PostgresDatabase(postgresPoolConfig({ POSTGRES_URL: url, NODE_ENV: 'test', DB_POOL_MAX: '4' }));
   const store: ApiStore = new PostgresApiStore(database);
+  const expiredRateBucketHash=randomBytes(32);
+  const runtimeRateBucketHash=randomBytes(32);
   const covered = new Set<StoreOperation>();
   const call = async (value: StoreRequest): Promise<Result> => {
     covered.add(value.operation);
@@ -75,8 +78,22 @@ async function main(): Promise<void> {
     const migrations = await database.query<{ max_version: number | null }>('SELECT max(version) AS max_version FROM schema_migrations');
     if (Number(migrations[0]?.max_version ?? 0) < 4) throw new Error('Test database is not migrated through version 4');
 
+    await database.execute(
+      `INSERT INTO rate_limit_buckets (bucket_key_hash,request_count,window_started_at,reset_at)
+       VALUES ($1,1,$2,$3)`,
+      [expiredRateBucketHash,new Date('1900-01-01T00:00:00.000Z'),new Date('1900-01-01T00:01:00.000Z')],
+    );
+    const runtimeRateDecision=await store.consumeRateLimit({bucketHash:runtimeRateBucketHash.toString('hex'),now:new Date(),windowMs:60_000,maximum:5});
+    assert.strictEqual(runtimeRateDecision.allowed,true);
+    const expiredRateBucket=await database.query<{count:string}>(
+      'SELECT count(*)::text count FROM rate_limit_buckets WHERE bucket_key_hash=$1',[expiredRateBucketHash],
+    );
+    assert.strictEqual(Number(expiredRateBucket[0]?.count),0,'runtime rate-limit request prunes expired buckets in a bounded batch');
+
     const smokeConfig=createApiConfig({NODE_ENV:'test',API_ORIGIN:'http://127.0.0.1',API_SESSION_HASH_SECRET:randomBytes(32).toString('base64url')});
-    const guestBootstrap=await httpRequest(createApplication(store,smokeConfig)).post('/api/v1/sessions')
+    const smokeApp=express();
+    smokeApp.use('/api/v1',createApiRouter(store,smokeConfig));
+    const guestBootstrap=await httpRequest(smokeApp).post('/api/v1/sessions')
       .set('Origin',smokeConfig.origin).send({});
     assert.strictEqual(guestBootstrap.status,201,'HTTP guest bootstrap creates a session through the mounted API');
     assert.ok(guestBootstrap.headers['set-cookie'],'HTTP guest bootstrap sets the opaque session cookie');
@@ -390,7 +407,14 @@ async function main(): Promise<void> {
   } finally {
     // This script is intentionally restricted to disposable databases; audit
     // events are append-only and fixtures are retained for run diagnostics.
-    await database.close();
+    try {
+      await database.execute(
+        'DELETE FROM rate_limit_buckets WHERE bucket_key_hash=$1 OR bucket_key_hash=$2',
+        [expiredRateBucketHash,runtimeRateBucketHash],
+      );
+    } finally {
+      await database.close();
+    }
   }
 }
 
