@@ -60,17 +60,31 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Get the current session's pending guest-claim conflicts
+         * @description Requires the authenticated session to have a server-bound pending guest
+         *     owner claim. Returns only unresolved name-conflict summaries for that
+         *     claim: the guest entity kind, opaque guest resource ID, its display name,
+         *     and the colliding display names in the authenticated owner's scope. It
+         *     does not accept an owner or guest ID and never returns unrelated owner,
+         *     account, player, team, or tournament data. The strong ETag is the current
+         *     session ETag and is also returned by GET /session; use the latest value
+         *     with POST /session/claim after resolving conflicts. Response is no-store.
+         */
+        get: operations["getGuestClaimStatus"];
         put?: never;
         /**
          * Transfer a pending guest owner scope to the authenticated account
          * @description Available only after login/registration with a validated guest session.
          *     The pending guest owner is bound server-side to the authenticated session;
          *     the request cannot select a guest or account owner. If canonical-name
-         *     collisions prevented automatic transfer at authentication, rename the
-         *     specified guest players/teams in this atomic claim. IDs and historical
-         *     snapshots are preserved; this operation never silently merges records by
-         *     name. A conflict or failed transaction changes nothing.
+         *     collisions prevented automatic transfer at authentication, resolve every
+         *     conflict shown by GET /session/claim with an explicit unique new name in
+         *     `renames`. IDs and historical snapshots are preserved; this operation
+         *     never silently merges records by name. Use the latest session ETag from
+         *     GET /session/claim or GET /session in If-Match. Require X-CSRF-Token and
+         *     same-origin/Origin validation. A conflict or failed transaction changes
+         *     nothing.
          */
         post: operations["claimGuestData"];
         delete?: never;
@@ -685,11 +699,18 @@ export interface components {
             /** @description Canonical name collisions that require explicit guest record renames before claim. */
             conflicts: components["schemas"]["GuestNameConflict"][];
         };
+        /** @description Minimal owner-authorized name-conflict summary; collisionNames contains names only, never IDs or data from an unrelated owner. */
         GuestNameConflict: {
             /** @enum {string} */
-            resourceType: "player" | "team";
-            guestResourceId: components["schemas"]["Id"];
-            guestName: string;
+            entityKind: "player" | "team";
+            resourceId: components["schemas"]["Id"];
+            displayName: string;
+            collisionNames: string[];
+        };
+        GuestClaimStatus: {
+            /** @constant */
+            pending: true;
+            conflicts: components["schemas"]["GuestNameConflict"][];
         };
         GuestNameResolution: {
             /** @enum {string} */
@@ -1107,6 +1128,33 @@ export interface operations {
             default: components["responses"]["Problem"];
         };
     };
+    getGuestClaimStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Safe conflict summary for the guest claim bound to this session. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuestClaimStatus"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["RateLimited"];
+            default: components["responses"]["Problem"];
+        };
+    };
     claimGuestData: {
         parameters: {
             query?: never;
@@ -1142,6 +1190,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["CsrfRejected"];
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             412: components["responses"]["PreconditionFailed"];
             422: components["responses"]["ValidationFailed"];
