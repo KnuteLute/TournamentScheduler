@@ -164,6 +164,7 @@ jobs:
             exit 1
           fi
           npm run test:integration
+          npm run test:security
 
   e2e:
     name: e2e
