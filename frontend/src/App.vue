@@ -52,6 +52,11 @@ async function logout() {
           {{ session.session.account?.username || 'Gjest' }}
         </span>
         <RouterLink
+          v-if="session.session?.pendingGuestClaim"
+          class="button button-secondary button-small claim-nav-link"
+          to="/auth"
+        >Løs gjesteoverføring</RouterLink>
+        <RouterLink
           v-if="!session.signedIn"
           class="button button-quiet button-small"
           to="/auth"
@@ -79,13 +84,23 @@ async function logout() {
         {{ bootstrapError }}
       </div>
       <div
-        v-if="!session.bootstrapped"
+        v-if="!session.bootstrapped || session.loggingOut"
         class="loading-state"
         role="status"
       >
-        Klargjør økten …
+        {{ session.loggingOut ? 'Logger ut …' : 'Klargjør økten …' }}
       </div>
-      <RouterView v-else />
+      <RouterView
+        v-else-if="session.session"
+        :key="session.ownerGeneration"
+      />
+      <p
+        v-else
+        class="notice notice-warning"
+        role="status"
+      >
+        Ingen aktiv økt. Oppdater siden for å prøve igjen.
+      </p>
     </main>
     <footer class="site-footer">
       <span>Enklere turneringer. Bedre flyt.</span><span>Sikker økt · Alltid oppdatert fra serveren</span>
