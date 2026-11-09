@@ -176,20 +176,20 @@ jobs:
       postgres:
         image: postgres:16.4-alpine
         env:
-          POSTGRES_DB: tournament_e2e
+          POSTGRES_DB: tournament_e2e_test
           POSTGRES_USER: tournament_e2e
           POSTGRES_PASSWORD: disposable-ci-only
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U tournament_e2e -d tournament_e2e"
+          --health-cmd "pg_isready -U tournament_e2e -d tournament_e2e_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
       NODE_ENV: test
-      POSTGRES_URL: postgres://tournament_e2e:disposable-ci-only@localhost:5432/tournament_e2e
-      TEST_DATABASE_NAME: tournament_e2e
+      POSTGRES_URL: postgres://tournament_e2e:disposable-ci-only@localhost:5432/tournament_e2e_test
+      TEST_DATABASE_NAME: tournament_e2e_test
       TEST_API_ORIGIN: http://127.0.0.1:4173
       E2E_BASE_URL: http://127.0.0.1:4173
       PORT: "4173"
