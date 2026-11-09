@@ -133,7 +133,6 @@ interface MatchRow {
   winner_side: 1 | 2 | null;
   version: number;
   normalized_started_at: Date | null;
-  end_time: Date | null;
   completed_at: Date | null;
   created_at: Date;
 }
@@ -1108,7 +1107,7 @@ export class PostgresApiStore implements ApiStore {
     }
     const matchRows=await tx.query<MatchRow>(
       `SELECT id,public_id::text,external_id,tournament_id,round,sequence_no,normalized_status,winner_side,version,
-        normalized_started_at,end_time,completed_at,created_at FROM matches WHERE tournament_id=$1 AND owner_id=$2
+        normalized_started_at,completed_at,created_at FROM matches WHERE tournament_id=$1 AND owner_id=$2
        ORDER BY sequence_no,id`,[row.id,ownerId],
     );
     const matches:DomainMatch[]=[];

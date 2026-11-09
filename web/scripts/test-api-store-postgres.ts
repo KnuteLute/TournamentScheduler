@@ -110,20 +110,21 @@ async function main(): Promise<void> {
       [archivedTournamentId,registeredOwner,Number(account!.id)],
     );
     const archivedTournamentRowId=archivedTournament[0]!.id;
+    const archivedExternalId=`unverified-${randomUUID()}`;
     const archivedMatchId=await database.query<{id:number}>(
       `INSERT INTO matches (public_id,external_id,tournament_id,owner_id,user_id,sequence_no,round,normalized_status,status,
         winner_side,version,teams,mode,end_time,completed_at)
-       VALUES ($1,$2,$3,$4,$5,1,1,'completed','completed',1,1,$6::jsonb,'1v1',now(),now()) RETURNING id`,
-      [randomUUID(),`unverified-${randomUUID()}`,archivedTournamentRowId,registeredOwner,Number(account!.id),JSON.stringify([
-        {id:'legacy-side-1',participants:[{id:'unknown-old-player',name:'Unresolved Snapshot'}],score:4},
-        {id:'legacy-side-2',participants:[{id:String(targetPlayerB.value.id),name:'Target Player'}],score:2},
+       VALUES ($1,$2,$3,$4,$5,1,1,'scheduled','scheduled',NULL,1,$6::jsonb,'1v1',now(),NULL) RETURNING id`,
+      [randomUUID(),archivedExternalId,archivedTournamentRowId,registeredOwner,Number(account!.id),JSON.stringify([
+        {id:'legacy-side-1',participants:[{id:'unknown-old-player',name:'Unresolved Snapshot'}],score:0},
+        {id:'legacy-side-2',participants:[{id:String(targetPlayerB.value.id),name:'Target Player'}],score:0},
       ])],
     );
     const archivedMatchRowId=archivedMatchId[0]!.id;
     for(let sideNo=1;sideNo<=2;sideNo++)await database.execute(
       `INSERT INTO match_sides (match_id,tournament_id,owner_id,side_no,score,side_label,side_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [archivedMatchRowId,archivedTournamentRowId,registeredOwner,sideNo,sideNo===1?4:2,`Archived ${sideNo}`,`legacy-side-${sideNo}`],
+       VALUES ($1,$2,$3,$4,NULL,$5,$6)`,
+      [archivedMatchRowId,archivedTournamentRowId,registeredOwner,sideNo,`Archived ${sideNo}`,`legacy-side-${sideNo}`],
     );
     await database.execute(
       `INSERT INTO match_players (match_id,side_no,tournament_id,owner_id,position,player_id,enrollment_id,player_name_snapshot)
@@ -140,6 +141,16 @@ async function main(): Promise<void> {
       `SELECT count(*)::text count FROM match_players WHERE match_id=$1 AND player_id IS NULL AND player_name_snapshot='Unresolved Snapshot'`,[archivedMatchRowId],
     );
     assert.strictEqual(Number(unresolvedSnapshot[0]?.count),1);
+    const archivedMatch=await call(request('matches.get',accountActor,{resourceId:archivedTournamentId,matchId:archivedExternalId}));
+    assert.strictEqual(archivedMatch.value.status,'scheduled');
+    assert.strictEqual(archivedMatch.value.endTime,null);
+    assert.strictEqual(archivedMatch.value.winnerSide,null);
+    assert.ok(archivedMatch.value.sides.every((side:any)=>side.score===null));
+    const preservedLegacySource=await database.query<{raw_end_time:Date|null;legacy_score:number}>(
+      `SELECT end_time AS raw_end_time,(teams->0->>'score')::integer AS legacy_score FROM matches WHERE id=$1`,[archivedMatchRowId],
+    );
+    assert.ok(preservedLegacySource[0]?.raw_end_time);
+    assert.strictEqual(preservedLegacySource[0]?.legacy_score,0,'legacy JSON remains unchanged');
     const guestSessionHash = randomBytes(32);
     await call(request('session.createGuest', null, { credentials: { ...credential(), sessionTokenHash: guestSessionHash } }));
     const guestSession = await store.lookupSessionByTokenHash(guestSessionHash, new Date());
