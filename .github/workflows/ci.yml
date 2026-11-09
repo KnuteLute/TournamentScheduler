@@ -30,10 +30,13 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6.1.0
         with:
           persist-credentials: false
-      - name: Report missing canonical lint command
-        run: |
-          echo "::error::CI is blocked: web/package.json has no lint script and the rollout plan says no linter/command is established. The lead must define and verify it before this check can pass."
-          exit 1
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6.5.0
+        with:
+          node-version: 22.23.4
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run lint
 
   typecheck:
     name: typecheck
@@ -48,10 +51,9 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6.5.0
         with:
           node-version: 22.23.4
-      - name: Install locked web dependencies
-        run: npm ci --prefix web
-      - name: Type-check and compile web
-        run: npm run build --prefix web
+      - name: Install locked workspace dependencies
+        run: npm ci
+      - run: npm run typecheck
 
   unit:
     name: unit
@@ -66,11 +68,8 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6.5.0
         with:
           node-version: 22.23.4
-      - name: Install locked web dependencies
-        run: npm ci --prefix web
-      - name: Run existing self-executing scheduler test
-        working-directory: web
-        run: npx ts-node src/lib/scheduler.test.ts
+      - run: npm ci
+      - run: npm run test:unit
 
   contract:
     name: contract
@@ -85,8 +84,8 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6.5.0
         with:
           node-version: 22.23.4
-      - name: Lint OpenAPI contract
-        run: npx --yes @redocly/cli lint docs/api/openapi.yaml
+      - run: npm ci
+      - run: npm run contract:check
 
   integration-postgres:
     name: integration-postgres
@@ -111,6 +110,14 @@ jobs:
     env:
       NODE_ENV: test
       POSTGRES_URL: postgres://tournament_test:disposable-ci-only@localhost:5432/tournament_test
+      TEST_DATABASE_NAME: tournament_test
+      TEST_API_ORIGIN: http://127.0.0.1:4173
+      E2E_BASE_URL: http://127.0.0.1:4173
+      PORT: "4173"
+      HOST: 127.0.0.1
+      API_ORIGIN: http://127.0.0.1:4173
+      API_SESSION_HASH_SECRET: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+      API_TRUSTED_PROXY_HOPS: "0"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6.1.0
         with:
@@ -118,10 +125,33 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6.5.0
         with:
           node-version: 22.23.4
-      - name: Report missing migration and integration test commands
+      - run: npm ci
+      - run: npm run db:migrate --prefix web
+      - run: npm run build
+      - name: Start app and run PostgreSQL integration tests
+        shell: bash
         run: |
-          echo "::error::CI is blocked: no versioned migration command or canonical PostgreSQL integration test command is defined yet. The rollout plan requires these before this job can execute meaningful database tests."
-          exit 1
+          set -Eeuo pipefail
+          setsid npm start --prefix web > "$RUNNER_TEMP/tournament-web.log" 2>&1 &
+          app_pid=$!
+          cleanup() {
+            kill -TERM -- "-$app_pid" 2>/dev/null || true
+            wait "$app_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl --silent --fail --output /dev/null "$TEST_API_ORIGIN/api/v1/health/ready"; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$ready" != 1 ]]; then
+            echo "::error::Application did not become ready at the configured test API origin. Application log is retained only on the ephemeral runner and is not printed or uploaded."
+            exit 1
+          fi
+          npm run test:integration
 
   e2e:
     name: e2e
@@ -146,15 +176,52 @@ jobs:
     env:
       NODE_ENV: test
       POSTGRES_URL: postgres://tournament_e2e:disposable-ci-only@localhost:5432/tournament_e2e
-      JWT_SECRET: ci-only-synthetic-signing-key-not-for-deployment
+      TEST_DATABASE_NAME: tournament_e2e
+      TEST_API_ORIGIN: http://127.0.0.1:4173
+      E2E_BASE_URL: http://127.0.0.1:4173
+      PORT: "4173"
+      HOST: 127.0.0.1
+      API_ORIGIN: http://127.0.0.1:4173
+      API_SESSION_HASH_SECRET: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+      API_TRUSTED_PROXY_HOPS: "0"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6.1.0
         with:
           persist-credentials: false
-      - name: Report missing browser harness and app test command
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6.5.0
+        with:
+          node-version: 22.23.4
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Install Playwright Chromium and system dependencies
+        run: npx playwright install --with-deps chromium
+      - run: npm run db:migrate --prefix web
+      - run: npm run build
+      - name: Start app and run browser E2E tests
+        shell: bash
         run: |
-          echo "::error::CI is blocked: the Playwright harness, frontend application, and canonical E2E command are not present yet. No production secrets are provided to this job."
-          exit 1
+          set -Eeuo pipefail
+          setsid npm start --prefix web > "$RUNNER_TEMP/tournament-web.log" 2>&1 &
+          app_pid=$!
+          cleanup() {
+            kill -TERM -- "-$app_pid" 2>/dev/null || true
+            wait "$app_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl --silent --fail --output /dev/null "$E2E_BASE_URL/api/v1/health/ready"; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$ready" != 1 ]]; then
+            echo "::error::Application did not become ready at the configured E2E base URL. Application log is retained only on the ephemeral runner and is not printed or uploaded."
+            exit 1
+          fi
+          npm run test:e2e
 
   build:
     name: build
@@ -169,16 +236,11 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6.5.0
         with:
           node-version: 22.23.4
-      - name: Build current Express application
-        run: |
-          npm ci --prefix web
-          npm run build --prefix web
-      - name: Report missing Vue production build
-        if: ${{ hashFiles('frontend/package.json') == '' }}
-        run: echo "::warning::Vue production build is not present in this checkout; Vercel SPA build cannot be validated until frontend/package.json is merged."
+      - run: npm ci
+      - run: npm run build
 
   security:
-    name: security
+    name: security-audit
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -190,7 +252,23 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6.5.0
         with:
           node-version: 22.23.4
-      - name: Audit root lockfile
+      - name: Audit root lockfile (high severity and above)
         run: npm audit --audit-level=high
-      - name: Audit web lockfile
-        run: npm audit --prefix web --audit-level=high
+
+  security-tests:
+    name: security-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6.5.0
+        with:
+          node-version: 22.23.4
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run test:security

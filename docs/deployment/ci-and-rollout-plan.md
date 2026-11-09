@@ -2,22 +2,17 @@
 
 ## Scope and current state
 
-This plan keeps the existing Vercel deployment target and PostgreSQL data store. The Platform & CI work adds workflow/configuration foundations, but repository branch-protection rules, Vercel project settings, and several canonical test commands remain operator/lead follow-ups; this document does not claim those external controls are active.
+This plan keeps Vercel as the hosting target and PostgreSQL as the production data store. CI calls the root workspace scripts and does not deploy or run production migrations. Repository branch protection and Vercel project/environment settings still require operator configuration; this document does not claim those external controls are active.
 
-Repository observations at the start of this workstream:
-
-- The application is under `web/`; `web/vercel.json` routes requests to `web/src/app.ts` using Vercel's Node builder.
-- The application connects to PostgreSQL using `POSTGRES_URL`. Database initialization currently lives in `web/scripts/init-db.ts` and uses `CREATE TABLE IF NOT EXISTS`; there is not yet a versioned migration history.
-- `web/package.json` defines `build` as `tsc`, but `test` is a placeholder that exits with an error. The root package has Jest dependencies and `jest.config.js`; a scheduler test exists at `web/src/lib/scheduler.test.ts`.
-- There are no established lint, contract, integration, or browser E2E scripts. Add and verify these commands before making their checks required.
+The root workspace provides lint, typecheck, unit, integration, E2E, contract, and build scripts. The Platform & CI workflow invokes those commands after `npm ci`. Some implementation pieces are not yet present in this worktree: `web/package.json` has no `db:migrate` script and `web/scripts/migrate.ts` is absent, `npm run test:security` is not defined at the root, `frontend/package.json` has no `test:e2e` script, and there are no `tests/integration/` fixtures. The root `npm ci` also currently fails because the root package manifest and lockfile are out of sync; dependency manifest/lockfile owners must resolve that before any workflow can install cleanly. The integration/E2E workflow references the planned `npm run db:migrate --prefix web` command and otherwise runs the prescribed sequence; the migration and affected suites must be verified after their owning changes merge. No placeholder step pretends these checks passed.
 
 ## Platform implementation status
 
-The workflows in `.github/workflows/` run PR and push checks for `upgrade/tournament-v2` (including merge-queue `merge_group` requests), use read-only repository permissions except for the narrowly scoped CodeQL job, and do not receive production credentials. CodeQL and npm audits also run on the scheduled weekly cadence after the workflow is present on the repository's default branch. Dependency Review blocks newly introduced high-severity vulnerabilities. Dependabot proposes weekly GitHub Actions and npm dependency updates.
+The workflows in `.github/workflows/` run PR checks for, and pushes to, `upgrade/tournament-v2` (the integration branch), including `merge_group` requests. Jobs have read-only repository permissions except for the narrowly scoped CodeQL upload job; no PR/test job receives production credentials. CodeQL and the root lockfile audit also run weekly after the workflow is present on the repository's default branch. Dependency Review blocks newly introduced high-severity vulnerabilities. Dependabot proposes weekly GitHub Actions and npm dependency updates.
 
-The currently executable checks use the repository's existing commands: `npm run build --prefix web`, the self-executing scheduler test (`npx ts-node src/lib/scheduler.test.ts` from `web/`), and the OpenAPI lint command documented in `docs/api/README.md`. Although the rollout plan proposed Jest, the current scheduler file registers no Jest tests and instead executes assertions at import/run time; use of Jest reports “suite must contain at least one test,” so the workflow runs its existing self-executing test directly until the lead defines the unit-test command. The `lint`, PostgreSQL integration, and E2E jobs deliberately report blockers instead of inventing scripts or pretending unimplemented tests passed. The PostgreSQL job has a disposable PostgreSQL 16.4 service; its test command remains blocked until the lead/persistence/quality workstreams define and verify a migration command and integration command. E2E remains blocked until the Vue frontend, Playwright harness, and canonical test command are present. Do not mark these checks required or treat this workflow as release-ready until those blockers are resolved and each job runs real checks. The workflow currently validates the Express build; the Vercel Vue build cannot be exercised in this checkout until `frontend/package.json` lands.
+The CI jobs run the named root commands: `npm run lint`, `npm run typecheck`, `npm run test:unit`, `npm run contract:check`, `npm run test:integration`, `npm run test:e2e`, and `npm run build`. Separate `security-audit` and `security-tests` jobs run `npm audit --audit-level=high` on the root lockfile and `npm run test:security`. The audit does not depend on a successful package install, so lockfile findings are still reported if `npm ci` fails. At this revision, `npm ci` fails because the root package manifest and lockfile are out of sync. The audit reports 3 high and 1 critical findings (18 advisories total); the high/critical results are not suppressed. The jobs are intentionally transparent about unfinished work: `db:migrate` is called directly in both PostgreSQL jobs, so it will fail until the persistence migration script and package script merge; `test:security`, the frontend E2E script, and integration fixtures also need their owning changes. Do not treat those checks as passing or make them required until those changes land and the actual jobs are green.
 
-Initial local `npm audit --audit-level=high` checks of both committed lockfiles fail: the root lockfile reports 3 high and 1 critical advisories (among other lower severities), and the web lockfile reports 1 high and 1 critical (plus 1 moderate). These are dependency-owner/lead blockers and are intentionally not suppressed or auto-fixed in this platform-only workstream. The `security` job will remain red until the dependency owners resolve or explicitly document scoped, expiring exceptions.
+Integration and E2E use isolated PostgreSQL services, test-only credentials, `npm run db:migrate --prefix web`, a local `npm start --prefix web` server bound to `127.0.0.1:4173`, and a readiness probe to `/api/v1/health/ready`. E2E installs Playwright Chromium with system dependencies. Logs are not printed or uploaded. The test jobs set `API_TRUSTED_PROXY_HOPS=0`; they never trust a proxy header in CI. In the source currently available on this branch, `web/src/app.ts` still uses a fixed development port and does not compose the new API router; verify the lead-owned app composition is integrated before expecting this readiness probe to pass. That source is outside Platform & CI ownership and was not changed here.
 
 GitHub Actions are pinned to full SHAs. Current pin sources, resolved from the upstream repositories' GitHub commit/tag API and retained as inline release comments:
 
@@ -34,11 +29,11 @@ The CodeQL init/analyze steps intentionally share one commit. PR analysis does n
 
 ### Vercel and SPA/API routing
 
-`web/vercel.json` keeps the Express Node function as the API and legacy route target, routes `/api/**` to it, and maps `/app/**` to the static Vue SPA with `/app/` as the asset base and SPA-history fallback. The static build expects `frontend/package.json` to run a Vite-compatible `build` script and emit `dist/`. The current checkout does not contain that frontend yet, so the Vercel config cannot be validated until that workstream is integrated. Vercel must keep the `web` project root and allow build access to files outside the root directory so `../frontend` can be built. Do not promote a deployment with an unresolved missing frontend build. API/function routes must remain ahead of SPA fallback routes.
+`frontend/vite.config.ts` builds the SPA at `web/public/app` with base `/app/`. `web/vercel.json` uses the Vercel static builder for those assets, maps `/app/assets/**` and SPA history requests under `/app/**` to the static output, and sends `/api/v1/**` (plus legacy routes) through the Express function at `src/app.ts`. The Node build includes `public/**` for legacy static assets. Configure the Vercel project root as `web` and enable access to files outside the root directory for `../frontend`. Verify API routing, SPA history fallback, and static assets before promotion; Vercel does not run database migrations.
 
 ## GitHub Actions design
 
-Use separate, named workflows (or clearly named jobs in a single workflow) so required-check names remain stable. Run CI for pull requests targeting the protected default branch and for pushes to that branch. Use `merge_group` if GitHub merge queues are enabled. Cancel superseded PR runs. Do not run deployment or migration steps from untrusted fork PRs.
+Use separate, named workflows (or clearly named jobs in a single workflow) so required-check names remain stable. CI runs for pull requests targeting `upgrade/tournament-v2` and pushes to that integration branch, plus `merge_group`. Cancel superseded PR runs. Migrations in CI run only against disposable PostgreSQL services; never deploy or migrate production from a PR workflow.
 
 ### Pull-request checks
 
@@ -46,13 +41,13 @@ Run the following checks on every PR, in parallel where practical, and make all 
 
 | Check | Proposed work | Gate |
 | --- | --- | --- |
-| `lint` | Install the locked `web` dependencies with `npm ci`; run the chosen linter against maintained TypeScript/JavaScript sources. | No lint errors; warnings policy is explicit and non-bypassable. |
-| `typecheck` | Run `npm run build` in `web/` (or a dedicated no-emit typecheck script if compilation output is separated). | TypeScript exits successfully. |
-| `unit` | Run Jest in-band or with bounded workers against pure logic, including the scheduler suite. Replace the placeholder web test script and define one canonical command. | All unit tests pass; upload coverage as informational initially, then set a measured minimum once a baseline exists. |
-| `contract` | Validate request/response behavior and compatibility for externally used routes and data shapes. Start with route/controller tests and committed fixtures; adopt an explicit schema/OpenAPI contract if one is introduced. | Contract fixtures and compatibility assertions pass. Do not treat compilation alone as a contract test. |
-| `integration-postgres` | Start a disposable PostgreSQL service at a pinned major version; wait for health; apply migrations to an empty database; run repository and persistence tests against it; tear it down. | Schema bootstrap, CRUD/transaction behavior, and test cleanup pass. Use a unique database per job and never connect this job to deployed data. |
-| `e2e` | Run the application with an isolated PostgreSQL database and test-only secrets, then exercise core browser flows (sign-in/session, tournament setup, match completion/history). Use a maintained browser harness such as Playwright after it is added and locked. | Core flows pass, test data is isolated, and logs/artifacts do not expose credentials. |
-| `build` | Run the same production build that Vercel expects, with no production credentials. | Build succeeds and deployable output is generated. |
+| `lint` | `npm ci`; `npm run lint`. | No lint errors; warnings policy is explicit and non-bypassable. |
+| `typecheck` | `npm ci`; `npm run typecheck`. | TypeScript exits successfully. |
+| `unit` | `npm ci`; `npm run test:unit`. | All unit tests pass; upload coverage as informational initially, then set a measured minimum once a baseline exists. |
+| `contract` | `npm ci`; `npm run contract:check`. | OpenAPI contract validation passes; do not treat compilation alone as a contract test. |
+| `integration-postgres` | Start a disposable PostgreSQL service; set the isolated test environment; run `npm run db:migrate --prefix web`, build, start the app, probe readiness, and run `npm run test:integration`. | Schema bootstrap, CRUD/transaction behavior, and test cleanup pass. Never connect this job to deployed data. The migration command is referenced but not yet present in this worktree; the job is blocked until persistence integration merges it. |
+| `e2e` | Start an isolated PostgreSQL service; run migration/build/start/readiness; install Playwright Chromium with OS dependencies; run `npm run test:e2e`. | Browser journeys pass with synthetic credentials; logs/artifacts do not expose credentials. |
+| `build` | `npm ci`; `npm run build` (contracts, Express API, and Vue static output) without production credentials. | Build succeeds and deployable output is generated. |
 
 Tests needing a database must never rely on the local JSON/offline mode as a substitute for PostgreSQL integration. E2E should use a disposable database or isolated preview environment, not production. Avoid brittle tests that depend on third-party live services.
 
@@ -61,12 +56,12 @@ Tests needing a database must never rely on the local JSON/offline mode as a sub
 Run security checks on PRs and on a scheduled cadence (at least weekly), plus the default branch:
 
 - Dependency review for newly introduced or upgraded packages, with high-severity vulnerable packages blocked unless a documented, time-limited exception is approved.
-- `npm audit` (or an equivalent lockfile scanner) for the root and `web/` lockfiles. Start with high/critical as blocking; manage advisories with scoped exceptions that name an owner and expiry, rather than suppressing whole classes.
+- `npm audit --audit-level=high` for the root lockfile; high and critical findings block. Manage advisories with scoped exceptions that name an owner and expiry, rather than suppressing whole classes.
 - Secret scanning and push protection at the GitHub repository level. Add a CI scanner if repository policy requires it; ensure generated test fixtures contain no credentials.
 - CodeQL JavaScript/TypeScript analysis, with security alerts reviewed and high-confidence findings fixed or explicitly triaged.
 - A workflow/configuration scanner for Actions and deployment configuration, where available.
 
-Security jobs must use read-only repository permissions and must not receive Vercel or production database secrets. Do not run untrusted PR code in a `pull_request_target` job with secrets or write permissions.
+Security jobs use read-only repository permissions except for CodeQL's `security-events: write` upload permission on the CodeQL analysis job. PR analysis disables upload, and no security job receives Vercel or production database secrets. Do not run untrusted PR code in a `pull_request_target` job with secrets or write permissions.
 
 ## Workflow hardening
 
@@ -104,8 +99,11 @@ Store secrets in Vercel's environment settings for runtime use and in GitHub Env
 
 Expected values and handling:
 
-- `POSTGRES_URL`: runtime database connection string. Separate preview/staging and production database URLs; CI gets an ephemeral local service URL. Do not copy production credentials into GitHub PR jobs.
-- Auth signing/encryption secret(s) used by the app: independently generated values per environment, rotated with a planned overlap where supported. Never reuse development or CI values in production.
+- `POSTGRES_URL`: runtime database connection string. Separate preview/staging and production database URLs; CI gets an ephemeral local service URL. Production uses the provider TLS endpoint with `sslmode=require` (prefer `verify-full` where provider certificates permit). Do not copy production credentials into GitHub PR jobs.
+- `API_SESSION_HASH_SECRET`: generate a high-entropy secret of at least 32 bytes independently for each environment and store it only in the corresponding Vercel environment. Rotate after suspected exposure; never use the synthetic CI value in a deployed environment.
+- `API_ORIGIN`: configure the exact public origin using `https://` in production (no path). Local CI uses `http://127.0.0.1:4173` only.
+- `API_TRUSTED_PROXY_HOPS`: keep at `0` unless the actual Vercel request/proxy chain has been verified for the deployed project. Set to `1` only after confirming Vercel presents exactly one trusted proxy hop and forwarded-header behavior; do not infer this setting from local tests.
+- Runtime app settings are Vercel environment values, not GitHub Action secrets. CI uses only disposable PostgreSQL credentials and a synthetic `API_SESSION_HASH_SECRET`.
 - Vercel deployment credential: preferably use the Vercel Git integration or short-lived OIDC-based authentication if supported and approved. If a token is unavoidable, scope it to the project/team, place it in a protected GitHub Environment, restrict job and branch access, and rotate it.
 - Any test credentials must be synthetic and disposable. Put no secrets in source, workflow YAML, command-line logs, artifacts, PR comments, or database snapshots.
 

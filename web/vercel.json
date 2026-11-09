@@ -13,22 +13,23 @@
       "src": "../frontend/package.json",
       "use": "@vercel/static-build",
       "config": {
-        "buildCommand": "npm run build -- --base=/app/",
-        "distDir": "dist"
+        "buildCommand": "npm run build",
+        "distDir": "../web/public/app"
       }
     }
   ],
   "routes": [
     {
-      "src": "^/api(?:/.*)?$",
+      "src": "^/api/v1(?:/.*)?$",
       "dest": "src/app.ts"
-    },
-    {
-      "handle": "filesystem"
     },
     {
       "src": "^/app/assets/(.*)$",
       "dest": "/assets/$1"
+    },
+    {
+      "src": "^/app/(.+\\.[A-Za-z0-9]+)$",
+      "dest": "/$1"
     },
     {
       "src": "^/app(?:/.*)?$",
