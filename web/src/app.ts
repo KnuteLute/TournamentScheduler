@@ -1,12 +1,15 @@
 import express, { type Express, type Request, type Response } from 'express';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import dotenv from 'dotenv';
 import { createApiRouter } from './api/router';
 import { ApiProblem, sendProblem } from './api/problem';
 import { createApiConfig, type ApiConfig } from './config/api';
 import type { ApiStore, RateLimitRequest, RateLimitDecision, SessionRecord, AccountCredential, StoreRequest, StoreResult } from './services/ports';
 
 declare const require: (id: string) => unknown;
+
+dotenv.config({ path: path.resolve(__dirname, '../../.env'), override: false, quiet: true });
 
 export interface ApplicationOptions {
   staticDirectory?: string;
