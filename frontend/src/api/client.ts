@@ -46,11 +46,20 @@ type RequestOptions = {
 }
 
 export class ApiClient {
+  private readonly base: string
+  private readonly fetcher: typeof fetch
+  private readonly csrfToken: () => string | undefined
+
   constructor(
-    private readonly base = '/api/v1',
-    private readonly fetcher: typeof fetch = fetch,
-    private readonly csrfToken: () => string | undefined = () => undefined,
-  ) {}
+    base = '/api/v1',
+    fetcher: typeof fetch = globalThis.fetch,
+    csrfToken: () => string | undefined = () => undefined,
+  ) {
+    this.base = base
+    // Native fetch requires a global receiver; injected mocks keep their original call behavior.
+    this.fetcher = fetcher === globalThis.fetch ? fetcher.bind(globalThis) : fetcher
+    this.csrfToken = csrfToken
+  }
 
   async request<T>(path: string, options: RequestOptions = {}): Promise<{ data: T; etag: string | null }> {
     const method = options.method || 'GET'
