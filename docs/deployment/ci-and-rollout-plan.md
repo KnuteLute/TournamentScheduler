@@ -2,7 +2,7 @@
 
 ## Scope and current state
 
-This plan keeps Vercel as the hosting target and PostgreSQL as the production data store. CI calls the root workspace scripts and does not deploy or run production migrations. Repository branch protection and Vercel project/environment settings still require operator configuration; this document does not claim those external controls are active.
+This plan keeps Vercel as the hosting target and PostgreSQL as the production data store. V2 should use a newly provisioned empty PostgreSQL database; legacy data import and conversion are not release requirements. CI calls the root workspace scripts and does not deploy or run production migrations. Repository branch protection and Vercel project/environment settings still require operator configuration; this document does not claim those external controls are active.
 
 The root workspace provides the requested lint, typecheck, unit, integration, security, E2E, contract, and build scripts, and its lockfile is synchronized. CI runs those commands after `npm ci`. The remaining cross-PR dependencies in this worktree are the persistence-owned `web/scripts/migrate.ts` and `db:migrate` script plus the persistence test file invoked by `web`'s unit script; the Quality/security integration fixtures, security tests, and Playwright config/specs are also pending their worktree PRs. CI calls `npm run db:migrate --prefix web`, `npm run test:integration`, `npm run test:security`, and `npm run test:e2e` directly; these are real gates, not always-failing placeholder steps, and must be verified once the respective PRs merge.
 
@@ -25,7 +25,7 @@ GitHub Actions are pinned to full SHAs. Current pin sources, resolved from the u
 
 The CodeQL init/analyze steps intentionally share one commit. PR analysis does not upload findings, avoiding a need for write permissions on untrusted fork PRs; trusted pushes, manual runs, and the schedule upload to GitHub code scanning. npm audit, dependency review, CodeQL, and PR build/test jobs do not use Vercel/database production secrets.
 
-`compose.yaml` starts only a local PostgreSQL 16.4 database, binds it to loopback, and uses clearly synthetic local credentials. It is not a production or deployment template. Start/stop it with `docker compose up -d postgres` and `docker compose down` (use a separate deliberate volume removal only when local data may be discarded).
+`compose.yaml` starts only a local PostgreSQL 16.4 database, binds it to loopback, and uses clearly synthetic local credentials. It is not a production or deployment template and contains no reset/wipe service; `docker compose down` stops the local service while preserving its named volume.
 
 ### Vercel and SPA/API routing
 
@@ -45,7 +45,7 @@ Run the following checks on every PR, in parallel where practical, and make all 
 | `typecheck` | `npm ci`; `npm run typecheck`. | TypeScript exits successfully. |
 | `unit` | `npm ci`; `npm run test:unit`. | All unit tests pass; upload coverage as informational initially, then set a measured minimum once a baseline exists. |
 | `contract` | `npm ci`; `npm run contract:check`. | OpenAPI contract validation passes; do not treat compilation alone as a contract test. |
-| `integration-postgres` | Start a disposable PostgreSQL service; set the isolated test environment; run `npm run db:migrate --prefix web`, build, start the app, probe readiness, and run `npm run test:integration`. | Schema bootstrap, CRUD/transaction behavior, and test cleanup pass. Never connect this job to deployed data. The migration command is referenced but not yet present in this worktree; the job is blocked until persistence integration merges it. |
+| `integration-postgres` | Start a disposable empty PostgreSQL service; set the isolated test environment; run `npm run db:migrate --prefix web`, build, start the app, probe readiness, and run `npm run test:integration`. | Schema bootstrap, CRUD/transaction behavior, and test cleanup pass. Never connect this job to deployed data. The migration command is referenced but not yet present in this worktree; the job is blocked until persistence integration merges it. |
 | `e2e` | Start an isolated PostgreSQL service; run migration/build/start/readiness; install Playwright Chromium with OS dependencies; run `npm run test:e2e`. | Browser journeys pass with synthetic credentials; logs/artifacts do not expose credentials. |
 | `build` | `npm ci`; `npm run build` (contracts, Express API, and Vue static output) without production credentials. | Build succeeds and deployable output is generated. |
 
@@ -109,37 +109,40 @@ Expected values and handling:
 
 Document each secret's owner, purpose, environment, rotation procedure, and recovery contact in the team's secret inventory (not with the secret value). Rotate immediately after suspected exposure and review access after staff or vendor changes.
 
-## Database migrations, backups, and rollback
+## Database rollout, backups, and recovery
 
-### Before rollout
+### V2 database choice
 
-1. Replace one-off schema evolution with an ordered, versioned migration system. The current `init-db.ts` creates tables with `IF NOT EXISTS` but does not track applied versions and is not sufficient for controlled upgrades. Establish a single migration command and a migration ledger before the first production schema change.
-2. Make migrations explicit, reviewable, idempotent where safe, and compatible with the currently running application. Avoid destructive changes in the same release that stops using the old schema.
-3. Run migrations in CI against an empty PostgreSQL database and, for upgrade safety, against a representative database snapshot with sensitive data removed. Verify failure behavior and migration locking.
-4. Configure the managed PostgreSQL provider's automated backups and point-in-time recovery (PITR). Set and verify a retention period that meets product recovery objectives. Document RPO/RTO, access controls, and provider-specific restore steps.
-5. Before each production migration, verify the latest successful backup/PITR window, record the restore point, and ensure someone authorized is available to monitor the deployment.
+Provision a new, empty managed PostgreSQL database for V2 and configure Vercel's V2 `POSTGRES_URL` to that database. Do not point V2 at the legacy database. Legacy data import, schema conversion, and cross-version data synchronization are explicitly out of scope; V2 starts with empty application data.
+
+Leave the existing V1 database untouched during the V2 rollout. It may be retained for reference or retired manually later after the product/data owner confirms retention, compliance, and recovery requirements. Retirement is a separate approved operator action through the database provider, not an application migration. Do not copy, alter, or delete its contents as part of the V2 deployment.
+
+### Migration safety
+
+- Run migrations in CI only against disposable empty PostgreSQL services. Verify schema creation, migration tracking, failure behavior, and locking there; never use a deployed database in CI.
+- Configure managed-database backups and point-in-time recovery (PITR) for the new V2 database, with a retention period that meets the product recovery objectives. Document RPO/RTO and provider-specific restore steps.
+- Applying the V2 schema to production is a deliberate, auditable operator action against the newly provisioned empty V2 database. Use the reviewed migration command and a migration-owner credential, verify the target database identity before applying, and link approval/results to the release.
+- Production migration is never run by a PR workflow, automatic preview, Vercel build, or application startup. No workflow or app-start path drops, truncates, resets, or wipes any database. Do not add or invoke a reset/wipe command.
 
 ### Production sequence
 
-1. Deploy additive, backward-compatible schema changes first (expand); do not remove or rename columns still read/written by the current app.
-2. Verify migration status and a small set of non-sensitive read/write smoke checks.
-3. Deploy the application version that uses the new schema, then monitor errors, latency, DB connections, and data integrity.
-4. After the compatibility window and verification, remove obsolete schema in a separate reviewed migration (contract).
-
-Run production migrations exactly once using a dedicated, auditable step with a migration-owner credential—not from every Vercel function startup, preview build, or parallel serverless instance. Serialize migration execution. Production migration approval should be separate from ordinary CI and linked to the commit/deployment.
+1. Provision the fresh empty V2 database and separate least-privilege migration/runtime credentials. Keep the V1 database connection separate and unchanged.
+2. Verify the target is the new empty V2 database; then, with explicit operator approval, apply the versioned schema once using the migration-owner credential.
+3. Configure Vercel's V2 production `POSTGRES_URL` for the new database and deploy the reviewed application. Smoke-test health and non-sensitive reads/writes; monitor errors, latency, connections, and data integrity.
+4. Keep V1 storage untouched while validating V2. Any later V1 database retirement is separately approved and performed manually by an authorized operator.
 
 ### Recovery
 
-- **Application-only regression:** use Vercel to restore/promote the last known-good deployment. Confirm compatibility with any schema change before rollback; rollback does not automatically undo a migration.
-- **Schema/data issue:** prefer a reviewed forward-fix when safe. If restoration is required, pause writes or place the app in a controlled maintenance mode, restore to a new database/PITR point, validate counts and representative records, then switch the protected connection configuration and smoke-test. Do not overwrite the only production database before validation.
-- Do not assume every migration has a safe `down` migration. Destructive or lossy changes require a backup/PITR plan, explicit approval, and a documented recovery decision before execution.
-- After recovery, record the incident, timeline, affected data window, validation results, and follow-up actions. Re-enable writes only after the data owner approves.
+- **Application-only regression:** use Vercel to restore/promote a known-good deployment, after checking which database URL that version expects. Do not automatically repoint V2 to V1.
+- **V2 schema/data issue:** prefer a reviewed forward-fix when safe. If restore is required, use the V2 database's backup/PITR to recover to a separate database, validate it, and deliberately update Vercel configuration. Do not overwrite the retained V1 database or discard new V2 writes during recovery.
+- Do not assume every migration has a safe `down` migration. Any destructive V2 schema operation requires explicit approval and a recovery decision; no application or CI workflow performs a database reset.
+- Record the incident, timeline, affected data window, validation results, and follow-up actions. Keep V2 writes paused until the data owner approves recovery.
 
 ## Rollout and adoption order
 
 1. Add and verify canonical lint, typecheck, unit, contract, PostgreSQL integration, build, and E2E commands locally; replace the test placeholder and prove each check against the actual codebase.
 2. Introduce the workflows in advisory mode. Fix baseline failures, verify security tools and test data isolation, then stabilize check names.
 3. Enable branch protection and required checks; configure Vercel preview/production environment protections and secret separation.
-4. Establish the migration ledger and test backup/PITR restore procedures before production schema changes.
-5. Deploy through Vercel with an additive migration, run smoke tests, monitor, and promote/rollback using the procedures above.
+4. Verify the new empty V2 database, migration ledger, and backup/PITR restore procedure before production apply.
+5. Deliberately apply the V2 migration to the new database, point Vercel at it, then deploy, smoke-test, and monitor. Keep the old database untouched for the agreed retention period.
 6. Review CI duration, flaky tests, security exceptions, database connection usage, and recovery objectives at least quarterly and after any production incident.
