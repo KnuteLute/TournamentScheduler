@@ -195,6 +195,21 @@ const cases = {
 		});
 		assert.equal(valid.production, true);
 		assert.equal(valid.sessionHashSecret.byteLength, 32);
+
+		const legacyAuthPath = require.resolve("../../web/src/lib/auth.ts");
+		delete require.cache[legacyAuthPath];
+		process.env.NODE_ENV = "production";
+		delete process.env.JWT_SECRET;
+		assert.throws(() => require(legacyAuthPath), /JWT_SECRET must be configured with at least 32 bytes/);
+		delete require.cache[legacyAuthPath];
+		process.env.JWT_SECRET = "weak-secret";
+		assert.throws(() => require(legacyAuthPath), /JWT_SECRET must be configured with at least 32 bytes/);
+		delete require.cache[legacyAuthPath];
+		process.env.JWT_SECRET = "s".repeat(32);
+		const { AuthUtils } = require(legacyAuthPath);
+		const token = AuthUtils.generateToken(1);
+		assert.ok(token);
+		assert.equal(AuthUtils.verifyToken(token).userId, 1);
 	},
 };
 
