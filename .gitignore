@@ -145,5 +145,12 @@ vite.config.ts.timestamp-*
 # Local offline app data
 web/.local-data/
 
+# Generated Vue production assets (built from frontend/)
+web/public/app/
+
+# Browser test output
+test-results/
+playwright-report/
+
 # Local offline app data
 web/.local-data/

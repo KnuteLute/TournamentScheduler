@@ -1,0 +1,27 @@
+{
+  "name": "@tournament/contracts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist",
+    "src/openapi.ts"
+  ],
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "generate": "openapi-typescript ../../docs/api/openapi.yaml -o src/openapi.ts",
+    "check:generated": "openapi-typescript ../../docs/api/openapi.yaml --check -o src/openapi.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "npm run generate && tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.8.3"
+  }
+}

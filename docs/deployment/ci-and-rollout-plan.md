@@ -1,0 +1,148 @@
+# CI and rollout plan
+
+## Scope and current state
+
+This plan keeps Vercel as the hosting target and PostgreSQL as the production data store. V2 should use a newly provisioned empty PostgreSQL database; legacy data import and conversion are not release requirements. CI calls the root workspace scripts and does not deploy or run production migrations. Repository branch protection and Vercel project/environment settings still require operator configuration; this document does not claim those external controls are active.
+
+The root workspace provides the requested lint, typecheck, unit, integration, security, E2E, contract, and build scripts, and its lockfile is synchronized. CI runs those commands after `npm ci`. The remaining cross-PR dependencies in this worktree are the persistence-owned `web/scripts/migrate.ts` and `db:migrate` script plus the persistence test file invoked by `web`'s unit script; the Quality/security integration fixtures, security tests, and Playwright config/specs are also pending their worktree PRs. CI calls `npm run db:migrate --prefix web`, `npm run test:integration`, `npm run test:security`, and `npm run test:e2e` directly; these are real gates, not always-failing placeholder steps, and must be verified once the respective PRs merge.
+
+## Platform implementation status
+
+The workflows in `.github/workflows/` run PR checks for and pushes to both `upgrade/tournament-v2` (integration) and `main` (the final release PR), including `merge_group` requests. Jobs have read-only repository permissions except for the narrowly scoped CodeQL upload job; no PR/test job receives production credentials. CodeQL and the root lockfile audit also run weekly after the workflow is present on the repository's default branch. Dependency Review blocks newly introduced high-severity vulnerabilities. Dependabot proposes weekly GitHub Actions and npm dependency updates.
+
+The CI jobs run the named root commands: `npm run lint`, `npm run typecheck`, `npm run test:unit`, `npm run contract:check`, `npm run test:integration`, `npm run test:e2e`, and `npm run build`. Separate `security-audit` and `security-tests` jobs run `npm audit --audit-level=high` on the root lockfile and `npm run test:security`. The root audit is independent of installation, so lockfile findings are reported even if another job's `npm ci` fails. Local verification on the current integration baseline: `npm ci`, lint, typecheck, contract check, build, and root/web high-severity audits pass (lint has two warnings; contract lint has two warnings; root audit has 7 low findings and web has none). `npm run test:unit` passes the domain/app, legacy scheduler, and API router suites, then stops because the referenced persistence test file is not merged. Integration/security report no tests, E2E lacks `playwright.config.ts`, and `db:migrate` is not present yet. These gates depend on the persistence, Quality, and security PRs; do not mark the affected checks green or required before they run successfully after merge.
+
+Integration and E2E use isolated PostgreSQL services, test-only credentials, `npm run db:migrate --prefix web`, a local `npm start --prefix web` server bound to `127.0.0.1:4173` (the server defaults to loopback), and a readiness probe to `/api/v1/health/ready`. After readiness, integration runs root `npm run test:integration`, which includes the HTTP suite and PostgreSQL API-store/rate-limit tests. `POSTGRES_TEST_DATABASE_URL` and `RATE_LIMIT_TEST_DATABASE_URL` are set to the same disposable URL as `POSTGRES_URL`. E2E installs Playwright Chromium with system dependencies. Logs are not printed or uploaded. Both jobs use a synthetic base64url `API_SESSION_HASH_SECRET`, a 41-character ASCII-only `TEST_ACCOUNT_PASSWORD` for guest registration/account-transfer flows, `API_TRUSTED_PROXY_HOPS=0`, `TEST_DATABASE_NAME`, `TEST_API_ORIGIN`, and `E2E_BASE_URL`; these disposable values are not Actions secrets or production credentials.
+
+GitHub Actions are pinned to full SHAs. Current pin sources, resolved from the upstream repositories' GitHub commit/tag API and retained as inline release comments:
+
+| Action | Release | Commit | Upstream tag-to-commit source |
+| --- | --- | --- | --- |
+| `actions/checkout` | v6.1.0 | `d23441a48e516b6c34aea4fa41551a30e30af803` | [GitHub API](https://api.github.com/repos/actions/checkout/commits/v6.1.0) |
+| `actions/setup-node` | v6.5.0 | `249970729cb0ef3589644e2896645e5dc5ba9c38` | [GitHub API](https://api.github.com/repos/actions/setup-node/commits/v6.5.0) |
+| `actions/dependency-review-action` | v5.0.0 | `a1d282b36b6f3519aa1f3fc636f609c47dddb294` | [GitHub API](https://api.github.com/repos/actions/dependency-review-action/commits/v5.0.0) |
+| `github/codeql-action` | v4.39.0 | `6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee` | [GitHub API](https://api.github.com/repos/github/codeql-action/commits/v4.39.0) |
+
+The CodeQL init/analyze steps intentionally share one commit. PR analysis does not upload findings, avoiding a need for write permissions on untrusted fork PRs; trusted pushes, manual runs, and the schedule upload to GitHub code scanning. npm audit, dependency review, CodeQL, and PR build/test jobs do not use Vercel/database production secrets.
+
+`compose.yaml` starts only a local PostgreSQL 16.4 database, binds it to loopback, and uses clearly synthetic local credentials. It is not a production or deployment template and contains no reset/wipe service; `docker compose down` stops the local service while preserving its named volume.
+
+### Vercel and SPA/API routing
+
+`frontend/vite.config.ts` keeps the normal local/root-workspace SPA output at `web/public/app` with base `/app/`. The Vercel static builder overrides only its build invocation with `npm run build -- --outDir=dist` and collects `distDir: "dist"` relative to the frontend package, so the builder's output matches without changing local Vite behavior. `web/vercel.json` maps `/app/assets/**` and SPA history requests under `/app/**` to that static output, and sends `/api/v1/**` (plus legacy routes) through the Express function at `src/app.ts`. Vercel applies the reviewed CSP, `nosniff`, frame denial, referrer policy, permissions policy, and HSTS headers to both `/app` and `/app/**`; these headers match the Express policy. The SPA build emits external scripts/styles and currently has no inline script or style blocks/attributes, so `script-src 'self'` and `style-src 'self'` remain compatible without unsafe allowances. The Node build includes `public/**` for legacy static assets. Configure the Vercel project root as `web` and enable access to files outside the root directory for `../frontend`. Verify API routing, SPA history fallback, headers, and static assets before promotion; Vercel does not run database migrations.
+
+## GitHub Actions design
+
+Use separate, named workflows (or clearly named jobs in a single workflow) so required-check names remain stable. CI runs for pull requests targeting `upgrade/tournament-v2` and pushes to that integration branch, plus `merge_group`. Cancel superseded PR runs. Migrations in CI run only against disposable PostgreSQL services; never deploy or migrate production from a PR workflow.
+
+### Pull-request checks
+
+Run the following checks on every PR, in parallel where practical, and make all of them required after initial rollout:
+
+| Check | Proposed work | Gate |
+| --- | --- | --- |
+| `lint` | `npm ci`; `npm run lint`. | No lint errors; warnings policy is explicit and non-bypassable. |
+| `typecheck` | `npm ci`; `npm run typecheck`. | TypeScript exits successfully. |
+| `unit` | `npm ci`; `npm run test:unit`. | All unit tests pass; upload coverage as informational initially, then set a measured minimum once a baseline exists. |
+| `contract` | `npm ci`; `npm run contract:check`. | OpenAPI contract validation passes; do not treat compilation alone as a contract test. |
+| `integration-postgres` | Start a disposable empty PostgreSQL service; set the isolated test environment; run `npm run db:migrate --prefix web`, build, start the app, probe readiness, and run `npm run test:integration`. | Schema bootstrap, CRUD/transaction behavior, and test cleanup pass. Never connect this job to deployed data. The migration command is referenced but not yet present in this worktree; the job is blocked until persistence integration merges it. |
+| `e2e` | Start an isolated PostgreSQL service; run migration/build/start/readiness; install Playwright Chromium with OS dependencies; run `npm run test:e2e`. | Browser journeys pass with synthetic credentials; logs/artifacts do not expose credentials. |
+| `build` | `npm ci`; `npm run build` (contracts, Express API, and Vue static output) without production credentials. | Build succeeds and deployable output is generated. |
+
+Tests needing a database must never rely on the local JSON/offline mode as a substitute for PostgreSQL integration. E2E should use a disposable database or isolated preview environment, not production. Avoid brittle tests that depend on third-party live services.
+
+### Security checks
+
+Run security checks on PRs and on a scheduled cadence (at least weekly), plus the default branch:
+
+- Dependency review for newly introduced or upgraded packages, with high-severity vulnerable packages blocked unless a documented, time-limited exception is approved.
+- `npm audit --audit-level=high` for the root lockfile; high and critical findings block. Manage advisories with scoped exceptions that name an owner and expiry, rather than suppressing whole classes.
+- Secret scanning and push protection at the GitHub repository level. Add a CI scanner if repository policy requires it; ensure generated test fixtures contain no credentials.
+- CodeQL JavaScript/TypeScript analysis, with security alerts reviewed and high-confidence findings fixed or explicitly triaged.
+- A workflow/configuration scanner for Actions and deployment configuration, where available.
+
+Security jobs use read-only repository permissions except for CodeQL's `security-events: write` upload permission on the CodeQL analysis job. PR analysis disables upload, and no security job receives Vercel or production database secrets. Do not run untrusted PR code in a `pull_request_target` job with secrets or write permissions.
+
+## Workflow hardening
+
+- Pin every third-party GitHub Action to a reviewed full commit SHA (not a mutable tag); add a comment with the corresponding release/version for maintainability. Keep pins updated via reviewed automation (for example, Dependabot) and verify upstream provenance before updating.
+- Set workflow-level `permissions: {}` and grant only job-specific permissions. PR test jobs generally need `contents: read`; security upload jobs should receive only the narrowly required security-events permission. Grant `id-token: write` only to an approved deployment job if Vercel OIDC is deliberately configured.
+- Use `actions/checkout` with least privilege and avoid persisting credentials unless required. Do not print environment values or enable shell tracing around secrets.
+- Use `npm ci` with committed lockfiles, a pinned supported Node LTS version, and a consistent npm version. Cache only package-manager data keyed by lockfile; never cache credentials or mutable build artifacts across trust boundaries.
+- Set job timeouts, concurrency groups, and explicit `if` conditions. Pin PostgreSQL service image to a supported major/minor or digest. Set `NODE_ENV=test` and test-only database values explicitly.
+- Protect workflow changes with CODEOWNERS/review. Treat changes to `.github/workflows/**`, deployment settings, migration scripts, and security suppressions as sensitive.
+- Keep artifacts short-lived and minimal. Do not upload `.env`, database dumps, cookies, or raw logs that could contain user data.
+
+## Branch protection and merge constraints
+
+Protect the default branch (and any release branch that can deploy) with a ruleset:
+
+1. Require pull requests; require at least one approving review and dismiss stale approvals after new commits. Require CODEOWNER approval for workflows, deployment configuration, and migrations.
+2. Require all named CI checks above, including the security policy gate, and require branches to be up to date (or use a merge queue that reruns checks on the merge group).
+3. Require conversation resolution. Block force pushes and branch deletion. Restrict direct pushes; permit only approved maintainers/bots under a documented exception.
+4. Do not allow routine administrator bypass of checks. Any emergency bypass must be recorded with rationale and followed by a remediation PR.
+5. Do not make a check required until it is consistently emitted with the final stable name for all relevant PRs. When renamed, transition old/new required checks deliberately to avoid a deadlock or an unprotected gap.
+
+## Vercel deployment and environment boundaries
+
+Keep Vercel as the hosting and deployment platform; do not introduce a second production host in this work. Preserve the existing Vercel project/build configuration unless an explicitly reviewed change is needed. CI should validate the app build without production credentials; Vercel remains responsible for creating deployments.
+
+- **Pull requests:** Vercel preview deployments may be created by the existing Vercel-Git integration. Keep preview secrets and database access isolated from production. Fork previews must either have no secrets and no writable database or be disabled. Never run schema migrations from an automatic preview deployment.
+- **Production:** deploy only commits merged to the protected production branch through the Vercel integration. Require Vercel's production environment protection/approval where available, and restrict who can change project settings, domains, environment variables, and deployment promotion.
+- **Promotion:** prefer promoting the already built, reviewed artifact/commit to production rather than rebuilding from a different source state. Smoke-test the promoted deployment and retain the prior known-good Vercel deployment for rapid application rollback.
+- **Runtime limits:** confirm Vercel Node runtime compatibility, function duration/concurrency, and PostgreSQL connection limits. Use the provider's recommended pooled connection endpoint where needed; size `pg` pool limits for serverless scaling and close/test connections appropriately. Monitor for connection exhaustion. Do not assume a process-local pool is shared across Vercel instances.
+- Keep health checks lightweight and non-mutating. They must not expose environment details or run destructive database initialization.
+
+## Secrets and access
+
+Store secrets in Vercel's environment settings for runtime use and in GitHub Environments only when a trusted CI/deployment job genuinely requires them. Use separate credentials per environment and least-privilege database roles.
+
+Expected values and handling:
+
+- `POSTGRES_URL`: runtime database connection string. Separate preview/staging and production database URLs; CI gets an ephemeral local service URL. Production uses the provider TLS endpoint with `sslmode=require` (prefer `verify-full` where provider certificates permit). Do not copy production credentials into GitHub PR jobs.
+- `API_SESSION_HASH_SECRET`: generate a high-entropy secret of at least 32 bytes independently for each environment and store it only in the corresponding Vercel environment. Rotate after suspected exposure; never use the synthetic CI value in a deployed environment.
+- `API_ORIGIN`: configure the exact public origin using `https://` in production (no path). Local CI uses `http://127.0.0.1:4173` only.
+- `API_TRUSTED_PROXY_HOPS`: keep at `0` unless the actual Vercel request/proxy chain has been verified for the deployed project. Set to `1` only after confirming Vercel presents exactly one trusted proxy hop and forwarded-header behavior; do not infer this setting from local tests.
+- Runtime app settings are Vercel environment values, not GitHub Action secrets. CI uses only disposable PostgreSQL credentials and a synthetic `API_SESSION_HASH_SECRET`.
+- Vercel deployment credential: preferably use the Vercel Git integration or short-lived OIDC-based authentication if supported and approved. If a token is unavoidable, scope it to the project/team, place it in a protected GitHub Environment, restrict job and branch access, and rotate it.
+- Any test credentials must be synthetic and disposable. Put no secrets in source, workflow YAML, command-line logs, artifacts, PR comments, or database snapshots.
+
+Document each secret's owner, purpose, environment, rotation procedure, and recovery contact in the team's secret inventory (not with the secret value). Rotate immediately after suspected exposure and review access after staff or vendor changes.
+
+## Database rollout, backups, and recovery
+
+### V2 database choice
+
+Provision a new, empty managed PostgreSQL database for V2 and configure Vercel's V2 `POSTGRES_URL` to that database. Do not point V2 at the legacy database. Legacy data import, schema conversion, and cross-version data synchronization are explicitly out of scope; V2 starts with empty application data.
+
+Leave the existing V1 database untouched during the V2 rollout. It may be retained for reference or retired manually later after the product/data owner confirms retention, compliance, and recovery requirements. Retirement is a separate approved operator action through the database provider, not an application migration. Do not copy, alter, or delete its contents as part of the V2 deployment.
+
+### Migration safety
+
+- Run migrations in CI only against disposable empty PostgreSQL services. Verify schema creation, migration tracking, failure behavior, and locking there; never use a deployed database in CI.
+- Configure managed-database backups and point-in-time recovery (PITR) for the new V2 database, with a retention period that meets the product recovery objectives. Document RPO/RTO and provider-specific restore steps.
+- Applying the V2 schema to production is a deliberate, auditable operator action against the newly provisioned empty V2 database. Use the reviewed migration command and a migration-owner credential, verify the target database identity before applying, and link approval/results to the release.
+- Production migration is never run by a PR workflow, automatic preview, Vercel build, or application startup. No workflow or app-start path drops, truncates, resets, or wipes any database. Do not add or invoke a reset/wipe command.
+
+### Production sequence
+
+1. Provision the fresh empty V2 database and separate least-privilege migration/runtime credentials. Keep the V1 database connection separate and unchanged.
+2. Verify the target is the new empty V2 database; then, with explicit operator approval, apply the versioned schema once using the migration-owner credential.
+3. Configure Vercel's V2 production `POSTGRES_URL` for the new database and deploy the reviewed application. Smoke-test health and non-sensitive reads/writes; monitor errors, latency, connections, and data integrity.
+4. Keep V1 storage untouched while validating V2. Any later V1 database retirement is separately approved and performed manually by an authorized operator.
+
+### Recovery
+
+- **Application-only regression:** use Vercel to restore/promote a known-good deployment, after checking which database URL that version expects. Do not automatically repoint V2 to V1.
+- **V2 schema/data issue:** prefer a reviewed forward-fix when safe. If restore is required, use the V2 database's backup/PITR to recover to a separate database, validate it, and deliberately update Vercel configuration. Do not overwrite the retained V1 database or discard new V2 writes during recovery.
+- Do not assume every migration has a safe `down` migration. Any destructive V2 schema operation requires explicit approval and a recovery decision; no application or CI workflow performs a database reset.
+- Record the incident, timeline, affected data window, validation results, and follow-up actions. Keep V2 writes paused until the data owner approves recovery.
+
+## Rollout and adoption order
+
+1. Add and verify canonical lint, typecheck, unit, contract, PostgreSQL integration, build, and E2E commands locally; replace the test placeholder and prove each check against the actual codebase.
+2. Introduce the workflows in advisory mode. Fix baseline failures, verify security tools and test data isolation, then stabilize check names.
+3. Enable branch protection and required checks; configure Vercel preview/production environment protections and secret separation.
+4. Verify the new empty V2 database, migration ledger, and backup/PITR restore procedure before production apply.
+5. Deliberately apply the V2 migration to the new database, point Vercel at it, then deploy, smoke-test, and monitor. Keep the old database untouched for the agreed retention period.
+6. Review CI duration, flaky tests, security exceptions, database connection usage, and recovery objectives at least quarterly and after any production incident.

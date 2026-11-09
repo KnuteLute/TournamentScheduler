@@ -2,8 +2,18 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 
 const SALT_ROUNDS = 10;
-// In production, always use a real secret from env variables
-const JWT_SECRET = process.env.JWT_SECRET || 'development-secret-key-do-not-use-in-prod';
+
+function jwtSecret(): string {
+    const secret = process.env.JWT_SECRET;
+    if (!secret || Buffer.byteLength(secret, 'utf8') < 32) {
+        throw new Error('JWT_SECRET must be configured with at least 32 bytes before legacy JWT utilities are used.');
+    }
+    return secret;
+}
+
+// The v2 application does not use JWTs. Fail closed if this legacy module is
+// accidentally loaded by a production entry point with no strong secret.
+if (process.env.NODE_ENV === 'production') jwtSecret();
 
 export class AuthUtils {
     static async hashPassword(password: string): Promise<string> {
@@ -19,12 +29,12 @@ export class AuthUtils {
         if (guestSessionId) {
             payload.guestSessionId = guestSessionId;
         }
-        return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+        return jwt.sign(payload, jwtSecret(), { expiresIn: '7d' });
     }
 
     static verifyToken(token: string): any {
         try {
-            return jwt.verify(token, JWT_SECRET);
+            return jwt.verify(token, jwtSecret());
         } catch (e) {
             return null;
         }

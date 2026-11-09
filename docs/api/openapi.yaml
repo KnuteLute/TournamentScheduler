@@ -1,0 +1,1821 @@
+openapi: 3.1.0
+info:
+  title: Tournament Scheduler API
+  version: 1.0.0
+  summary: Versioned API for managing tournament owners, players, teams, matches, and standings.
+  description: |
+    The API is the authoritative source for tournament state. It is designed for the
+    Vue client and is independent of the existing Express/EJS page routes. All
+    application endpoints are rooted at `/api/v1`. Resource identifiers are opaque
+    strings; clients must not infer ownership or identity from them.
+servers:
+  - url: /api/v1
+    description: Same-origin API
+tags:
+  - name: Health
+    description: Non-sensitive service liveness and readiness probes.
+  - name: Sessions
+    description: Guest and authenticated session lifecycle.
+  - name: Authentication
+    description: Account registration, login, and logout.
+  - name: Players
+    description: Owner-scoped reusable player records.
+  - name: Teams
+    description: Owner-scoped reusable fixed doubles rosters.
+  - name: Tournaments
+    description: Tournament setup and lifecycle commands.
+  - name: Matches
+    description: Server-generated match schedule and result commands.
+  - name: Standings
+    description: Read-only computed player/team tournament and owner-history standings.
+security:
+  - sessionCookie: []
+paths:
+  /health/live:
+    get:
+      tags: [Health]
+      operationId: getLiveness
+      summary: Check whether the API process is alive
+      description: |
+        Dependency-free liveness probe. It does not access PostgreSQL or expose
+        dependency state. This cheap endpoint is not rate-limited so frequent
+        orchestrator probes cannot be throttled; use readiness for dependency
+        health. A 503 is returned only while the process is deliberately draining
+        or otherwise unable to serve requests, not because a dependency is down.
+      security: []
+      responses:
+        '200':
+          description: The API process is alive.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: live }
+        '503':
+          description: The process is draining or unable to serve requests.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: unavailable }
+        default: { $ref: '#/components/responses/Problem' }
+  /health/ready:
+    get:
+      tags: [Health]
+      operationId: getReadiness
+      summary: Check whether the API is ready to serve requests
+      description: |
+        Performs a bounded, safe, read-only PostgreSQL readiness check. The
+        response reports only aggregate readiness and never includes database
+        identifiers, query text, credentials, errors, or timing details. This
+        endpoint is rate-limited to protect the database; a 429 is distinct from
+        readiness failure and includes Retry-After.
+      security: []
+      responses:
+        '200':
+          description: Required services are ready.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: ready }
+        '503':
+          description: The PostgreSQL readiness check failed or a required service is unavailable; no internal details are returned.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: not_ready }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /sessions:
+    post:
+      tags: [Sessions]
+      operationId: createGuestSession
+      summary: Create an anonymous guest session
+      description: |
+        Creates an anonymous owner scope and sets a fresh opaque session cookie.
+        This is a safe no-session bootstrap: it accepts no caller-selected owner,
+        requires same-origin/Origin and Fetch Metadata checks, rate limits creation,
+        and rotates to a newly generated credential. It is the only write endpoint
+        intentionally exempt from Idempotency-Key because a replayed raw secret
+        must not be stored for response replay. Call only when no usable session
+        cookie exists; do not retry after receiving a cookie. The server stores
+        only a hash of the random session secret. Guest-owned data is retained
+        until expiration or explicit account transfer.
+      security: []
+      responses:
+        '201':
+          description: Guest session created.
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/SessionCookie'
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /session:
+    get:
+      tags: [Sessions]
+      operationId: getSession
+      summary: Get the current session and owner scope
+      responses:
+        '200':
+          description: Current authenticated or guest session.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        default: { $ref: '#/components/responses/Problem' }
+    delete:
+      tags: [Sessions]
+      operationId: revokeSession
+      summary: Revoke the current session
+      description: Revokes the session and expires the cookie. Revoking a session does not delete its owner data.
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Session revoked.
+          headers:
+            Set-Cookie:
+              description: Expired session cookie.
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /session/claim:
+    get:
+      tags: [Sessions]
+      operationId: getGuestClaimStatus
+      summary: Get the current session's pending guest-claim conflicts
+      description: |
+        Requires the authenticated session to have a server-bound pending guest
+        owner claim. Returns only unresolved name-conflict summaries for that
+        claim: the guest entity kind, opaque guest resource ID, its display name,
+        and the colliding display names in the authenticated owner's scope. It
+        does not accept an owner or guest ID and never returns unrelated owner,
+        account, player, team, or tournament data. The strong ETag is the current
+        session ETag and is also returned by GET /session; use the latest value
+        with POST /session/claim after resolving conflicts. Response is no-store.
+      responses:
+        '200':
+          description: Safe conflict summary for the guest claim bound to this session.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuestClaimStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+    post:
+      tags: [Sessions]
+      operationId: claimGuestData
+      summary: Transfer a pending guest owner scope to the authenticated account
+      description: |
+        Available only after login/registration with a validated guest session.
+        The pending guest owner is bound server-side to the authenticated session;
+        the request cannot select a guest or account owner. If canonical-name
+        collisions prevented automatic transfer at authentication, resolve every
+        conflict shown by GET /session/claim with an explicit unique new name in
+        `renames`. IDs and historical snapshots are preserved; this operation
+        never silently merges records by name. Use the latest session ETag from
+        GET /session/claim or GET /session in If-Match. Require X-CSRF-Token and
+        same-origin/Origin validation. A conflict or failed transaction changes
+        nothing.
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [renames]
+              properties:
+                renames:
+                  type: array
+                  items: { $ref: '#/components/schemas/GuestNameResolution' }
+      responses:
+        '200':
+          description: Guest owner transferred atomically.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TransferSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /auth/register:
+    post:
+      tags: [Authentication]
+      operationId: register
+      summary: Register an account and transfer guest data
+      description: |
+        A pre-auth guest session may be supplied. If so, X-CSRF-Token from that
+        guest session is required and validated. Without any session cookie this
+        is a safe bootstrap: enforce same-origin/Origin and Fetch Metadata checks,
+        do not accept ambient cross-site credentials, and issue a new session only
+        after successful registration. On success, rotate the cookie. Transfer
+        guest data atomically when there are no canonical-name collisions;
+        otherwise authenticate successfully and retain a server-bound pending
+        guest claim for POST /session/claim. Never merge IDs or overwrite records
+        just because names match.
+      security:
+        - sessionCookie: []
+        - {}
+      parameters:
+        - $ref: '#/components/parameters/OptionalCsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterCredentials' }
+      responses:
+        '201':
+          description: Account and authenticated session created.
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SessionCookie' }
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /auth/login:
+    post:
+      tags: [Authentication]
+      operationId: login
+      summary: Authenticate and transfer guest data
+      description: |
+        A pre-auth guest session may be supplied. If so, X-CSRF-Token from that
+        guest session is required and validated. Without any session cookie this
+        is a safe bootstrap: enforce same-origin/Origin and Fetch Metadata checks,
+        do not accept ambient cross-site credentials, and issue an authenticated
+        session only after credential verification. On success, rotate the
+        cookie. Collision-free guest data is transferred atomically; otherwise
+        authentication succeeds with a server-bound pending guest claim for
+        POST /session/claim. Invalid credentials do not disclose whether the
+        username exists and never transfer data.
+      security:
+        - sessionCookie: []
+        - {}
+      parameters:
+        - $ref: '#/components/parameters/OptionalCsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginCredentials' }
+      responses:
+        '200':
+          description: Authenticated session established.
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SessionCookie' }
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      operationId: logout
+      summary: Log out and revoke the authenticated session
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Session revoked; owned data is unchanged.
+          headers:
+            Set-Cookie:
+              description: Expired session cookie.
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+
+  /players:
+    get:
+      tags: [Players]
+      operationId: listPlayers
+      summary: List players in the current owner scope
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: q
+          in: query
+          description: Optional case-insensitive name search.
+          schema: { type: string, maxLength: 100 }
+      responses:
+        '200':
+          description: Owner-scoped player page.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Player' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+    post:
+      tags: [Players]
+      operationId: createPlayer
+      summary: Create a player
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlayerInput' }
+      responses:
+        '201':
+          description: Player created.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Player' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /players/{playerId}:
+    parameters:
+      - $ref: '#/components/parameters/PlayerId'
+    get:
+      tags: [Players]
+      operationId: getPlayer
+      summary: Get a player
+      responses:
+        '200':
+          description: Player representation.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Player' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        default: { $ref: '#/components/responses/Problem' }
+    patch:
+      tags: [Players]
+      operationId: updatePlayer
+      summary: Rename a player
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 80 }
+      responses:
+        '200':
+          description: Player updated.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Player' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+    delete:
+      tags: [Players]
+      operationId: deletePlayer
+      summary: Delete a player
+      description: A player referenced by a draft or active tournament/team cannot be deleted; historical tournament snapshots remain unchanged.
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204': { description: Player deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+
+  /teams:
+    get:
+      tags: [Teams]
+      operationId: listTeams
+      summary: List teams in the current owner scope
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Owner-scoped team page.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Team' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+    post:
+      tags: [Teams]
+      operationId: createTeam
+      summary: Create a fixed doubles team
+      description: Teams are reusable owner-scoped rosters for 2v2_fixed tournaments and contain exactly two distinct owned players.
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TeamInput' }
+      responses:
+        '201':
+          description: Team created.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Team' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /teams/{teamId}:
+    parameters:
+      - $ref: '#/components/parameters/TeamId'
+    get:
+      tags: [Teams]
+      operationId: getTeam
+      summary: Get a team
+      responses:
+        '200':
+          description: Team representation.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Team' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        default: { $ref: '#/components/responses/Problem' }
+    patch:
+      tags: [Teams]
+      operationId: updateTeam
+      summary: Rename or change a team's players
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              type: object
+              additionalProperties: false
+              minProperties: 1
+              properties:
+                name: { type: string, minLength: 1, maxLength: 80 }
+                playerIds:
+                  type: array
+                  minItems: 2
+                  maxItems: 2
+                  uniqueItems: true
+                  items: { $ref: '#/components/schemas/Id' }
+      responses:
+        '200':
+          description: Team updated.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Team' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+    delete:
+      tags: [Teams]
+      operationId: deleteTeam
+      summary: Delete a team
+      description: A team used by a draft or active tournament cannot be deleted; completed tournament snapshots are retained.
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204': { description: Team deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+
+  /tournaments:
+    get:
+      tags: [Tournaments]
+      operationId: listTournaments
+      summary: List tournaments in the current owner scope
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: status
+          in: query
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/TournamentStatus' }
+          style: form
+          explode: false
+      responses:
+        '200':
+          description: Owner-scoped tournament page.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Tournament' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+    post:
+      tags: [Tournaments]
+      operationId: createTournament
+      summary: Create a draft tournament
+      description: |
+        Creation snapshots the selected player or team names into tournament
+        membership. It does not generate matches or mutate player statistics.
+        For 1v1 and 2v2_rotating supply playerIds; for 2v2_fixed supply teamIds.
+        Each mode requires distinct selected IDs and distinct canonical player
+        names; all rosters are limited to 32 distinct players. 1v1 requires at
+        least two players, rotating 2v2 at least four players, and fixed 2v2 uses
+        between two and 16 teams (at most 32 players).
+        Selected fixed teams must form a disjoint partition: no player may be
+        omitted or appear in more than one selected team. The server persists a
+        seed and generator version for deterministic schedule replay.
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTournament' }
+      responses:
+        '201':
+          description: Draft created.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tournament' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /tournaments/{tournamentId}:
+    parameters:
+      - $ref: '#/components/parameters/TournamentId'
+    get:
+      tags: [Tournaments]
+      operationId: getTournament
+      summary: Get a tournament
+      responses:
+        '200':
+          description: Tournament representation.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tournament' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        default: { $ref: '#/components/responses/Problem' }
+    patch:
+      tags: [Tournaments]
+      operationId: updateDraftTournament
+      summary: Update a draft tournament
+      description: |
+        Only draft tournaments are editable. A started tournament's participant
+        and mode snapshots are immutable. A name-only patch may omit mode and
+        roster. To replace a roster, include its mode and only the corresponding
+        playerIds (1v1/2v2_rotating) or teamIds (2v2_fixed); the server validates
+        the selected mode against the supplied roster and owned, disjoint team
+        membership.
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/TournamentPatch' }
+      responses:
+        '200':
+          description: Draft updated.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tournament' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+    delete:
+      tags: [Tournaments]
+      operationId: deleteDraftTournament
+      summary: Delete a draft tournament
+      description: Only a draft may be deleted. Started tournaments must be cancelled or completed and remain in history.
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204': { description: Draft deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /tournaments/{tournamentId}/start:
+    post:
+      tags: [Tournaments]
+      operationId: startTournament
+      summary: Validate and start a draft tournament
+      description: |
+        Atomically validates owned roster snapshots, fixes participants and mode,
+        creates the initial schedule, and changes draft to active. 1v1 and fixed
+        2v2 generate every unordered pair exactly once in rounds with explicit
+        byes when needed. Rotating 2v2 remains open-ended and generates only a
+        four-player slot under the persisted fairness/seed rules. Repeating the
+        same idempotency key replays the original response; attempting a new start
+        on a non-draft tournament is a conflict.
+      parameters:
+        - $ref: '#/components/parameters/TournamentId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Tournament started.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tournament' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /tournaments/{tournamentId}/cancel:
+    post:
+      tags: [Tournaments]
+      operationId: cancelTournament
+      summary: Cancel an active or paused tournament
+      description: Cancellation from active or paused is terminal, preserves recorded match history, and does not award unplayed matches.
+      parameters:
+        - $ref: '#/components/parameters/TournamentId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Tournament cancelled.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tournament' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /tournaments/{tournamentId}/pause:
+    post:
+      tags: [Tournaments]
+      operationId: pauseTournament
+      summary: Pause an active tournament
+      description: Sets `active` to `paused`; match schedules/results are retained and no score or match transition is accepted while the tournament is paused.
+      parameters:
+        - $ref: '#/components/parameters/TournamentId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Tournament paused.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tournament' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /tournaments/{tournamentId}/resume:
+    post:
+      tags: [Tournaments]
+      operationId: resumeTournament
+      summary: Resume a paused tournament
+      description: Sets `paused` to `active`; any match separately paused remains paused until its own resume command.
+      parameters:
+        - $ref: '#/components/parameters/TournamentId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Tournament resumed.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tournament' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /tournaments/{tournamentId}/finish:
+    post:
+      tags: [Tournaments]
+      operationId: finishTournament
+      summary: Finish an active or paused tournament
+      description: Marks an active or paused tournament completed. Unplayed scheduled, in-progress, or paused matches remain unplayed and do not affect standings.
+      parameters:
+        - $ref: '#/components/parameters/TournamentId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Tournament completed.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tournament' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /tournaments/{tournamentId}/availability:
+    patch:
+      tags: [Tournaments]
+      operationId: updateAvailability
+      summary: Set paused players in an active or paused tournament
+      description: |
+        Replaces the complete paused-player set. IDs must be tournament
+        participants. In rotating mode, paused players are excluded from future
+        generated matches; already-created or recorded matches are not rewritten.
+        If a newly paused player is in the in-progress match, that match changes
+        to `paused` and opens a pause interval; it remains paused after the player
+        is resumed until the explicit match-resume operation. A scheduled match
+        containing a paused player cannot start until that player resumes or the
+        match is skipped. While the tournament itself is paused, availability may
+        be updated but no match transition/generation occurs until tournament resume.
+      parameters:
+        - $ref: '#/components/parameters/TournamentId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [pausedPlayerIds]
+              properties:
+                pausedPlayerIds:
+                  type: array
+                  uniqueItems: true
+                  items: { $ref: '#/components/schemas/Id' }
+      responses:
+        '200':
+          description: Availability updated.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tournament' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /tournaments/{tournamentId}/matches:
+    get:
+      tags: [Matches]
+      operationId: listMatches
+      summary: List tournament matches
+      parameters:
+        - $ref: '#/components/parameters/TournamentId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: status
+          in: query
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/MatchStatus' }
+          style: form
+          explode: false
+      responses:
+        '200':
+          description: Tournament match page.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Match' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /tournaments/{tournamentId}/schedule:
+    get:
+      tags: [Tournaments]
+      operationId: getTournamentSchedule
+      summary: Get the persisted schedule and bye/rest events
+      description: Returns persisted generated events only; previews must not regenerate matches or use unseeded randomness. Bye/rest events have no score, winner, match timing, or standings credit.
+      parameters:
+        - $ref: '#/components/parameters/TournamentId'
+      responses:
+        '200':
+          description: Schedule events for this tournament.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Schedule' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /tournaments/{tournamentId}/matches/{matchId}:
+    parameters:
+      - $ref: '#/components/parameters/TournamentId'
+      - $ref: '#/components/parameters/MatchId'
+    get:
+      tags: [Matches]
+      operationId: getMatch
+      summary: Get a match
+      responses:
+        '200':
+          description: Match representation.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Match' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        default: { $ref: '#/components/responses/Problem' }
+  /tournaments/{tournamentId}/matches/{matchId}/start:
+    post:
+      tags: [Matches]
+      operationId: startMatch
+      summary: Start a scheduled match
+      description: |
+        Starts a scheduled match in an active tournament and records startTime.
+        At most one match may be in progress per tournament. A match can start
+        only after earlier sequence matches are completed or skipped, and none of
+        its players may be paused. Starting a match does not affect standings.
+      parameters:
+        - $ref: '#/components/parameters/TournamentId'
+        - $ref: '#/components/parameters/MatchId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Match started.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Match' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /tournaments/{tournamentId}/matches/{matchId}/pause:
+    post:
+      tags: [Matches]
+      operationId: pauseMatch
+      summary: Pause an in-progress match
+      description: Requires an active tournament; sets `in_progress` to `paused` and opens a pause interval. No score may be submitted until resumed.
+      parameters:
+        - $ref: '#/components/parameters/TournamentId'
+        - $ref: '#/components/parameters/MatchId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Match paused.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Match' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /tournaments/{tournamentId}/matches/{matchId}/resume:
+    post:
+      tags: [Matches]
+      operationId: resumeMatch
+      summary: Resume a paused match
+      description: Sets `paused` to `in_progress` and closes the open pause interval. Requires an active tournament and no paused participant in the match.
+      parameters:
+        - $ref: '#/components/parameters/TournamentId'
+        - $ref: '#/components/parameters/MatchId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Match resumed.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Match' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /tournaments/{tournamentId}/matches/{matchId}/result:
+    post:
+      tags: [Matches]
+      operationId: recordMatchResult
+      summary: Record or correct a match result
+      description: |
+        Valid only while the tournament is active and the match is in progress
+        (or completed when correcting its result). Scores are non-negative
+        integers; equal scores are draws. The match completion timestamp and
+        standings are committed atomically. Recompute both player and team views
+        and owner-overall aggregates. In rotating mode, a successful result may
+        append the next eligible match. The whole tournament version changes.
+      parameters:
+        - $ref: '#/components/parameters/TournamentId'
+        - $ref: '#/components/parameters/MatchId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecordResult' }
+      responses:
+        '200':
+          description: Result recorded and standings recalculated.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [match, tournamentVersion]
+                properties:
+                  match: { $ref: '#/components/schemas/Match' }
+                  tournamentVersion: { type: integer, minimum: 1 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /tournaments/{tournamentId}/matches/{matchId}/skip:
+    post:
+      tags: [Matches]
+      operationId: skipMatch
+      summary: Skip an unplayed match
+      description: |
+        Marks an unplayed match skipped without a score or standings effect. In
+        rotating mode the server may append the next eligible match. Completed or
+        already skipped matches cannot be skipped again under a new request key.
+        The tournament must be active; an explicit skip may void a scheduled,
+        in-progress, or paused match.
+      parameters:
+        - $ref: '#/components/parameters/TournamentId'
+        - $ref: '#/components/parameters/MatchId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Match skipped.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Match' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /standings:
+    get:
+      tags: [Standings]
+      operationId: getOverallStandings
+      summary: Get owner-scoped overall standings
+      description: |
+        Aggregates completed, non-void matches from the current authenticated
+        account or guest owner's retained history, never another owner's data or
+        an in-memory active-tournament state. `view=players` aggregates career
+        player statistics by stable player ID. `view=teams` aggregates fixed
+        registered teams by stable team identity and rotating partnerships by the
+        canonical unordered player-ID pair; rotating partnerships are labeled as
+        aggregates, not persistent registered teams. The view is mandatory.
+      parameters:
+        - name: view
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/StandingsView' }
+      responses:
+        '200':
+          description: Overall standings for the current owner scope.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { schema: { type: string, const: no-cache } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Standings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+  /tournaments/{tournamentId}/standings:
+    get:
+      tags: [Standings]
+      operationId: getStandings
+      summary: Get computed standings
+      description: |
+        The required `view` independently selects `players` or `teams`; neither
+        table is derived from the other. Player view includes every roster player,
+        including zero-appearance rows. Team view is single-player sides in 1v1,
+        fixed teams in 2v2_fixed, and only completed unordered partnerships in
+        2v2_rotating. Only completed, non-void matches contribute. Rank by wins
+        descending, point differential descending, then points-for descending;
+        equal competitive values share a rank. Normalized name and stable ID are
+        display ordering only and never break a competitive tie. No win-point
+        total, head-to-head, or unstated tiebreaker is exposed or applied.
+      parameters:
+        - $ref: '#/components/parameters/TournamentId'
+        - name: view
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/StandingsView' }
+      responses:
+        '200':
+          description: Current computed standings.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { schema: { type: string, const: no-cache } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Standings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-ts_session
+      description: |
+        Secure opaque random session secret. The server stores a one-way hash,
+        rotates the secret on authentication/privilege change, and never accepts
+        session IDs from request bodies or URLs. Cookie attributes: Secure,
+        HttpOnly, SameSite=Lax (or stricter), Path=/, no Domain. Mutations also
+        require a CSRF token and same-origin validation.
+  headers:
+    SessionCookie:
+      description: |
+        Opaque session cookie. Set with Secure; HttpOnly; SameSite=Lax; Path=/;
+        no Domain; and an expiry no longer than the server session lifetime.
+      schema: { type: string }
+    ETag:
+      description: Strong entity tag; match-command responses return the parent tournament ETag required for subsequent match mutations, while session claim uses the session ETag.
+      schema: { type: string, pattern: '^"[A-Za-z0-9._:-]+"$' }
+  parameters:
+    PlayerId:
+      name: playerId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Id' }
+    TeamId:
+      name: teamId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Id' }
+    TournamentId:
+      name: tournamentId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Id' }
+    MatchId:
+      name: matchId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Id' }
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: Session-bound anti-CSRF token obtained from the session bootstrap/representation.
+      schema: { type: string, minLength: 32, maxLength: 256 }
+    OptionalCsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      description: Required and validated whenever a pre-auth guest session cookie is present; omitted only for the documented no-session bootstrap.
+      schema: { type: string, minLength: 32, maxLength: 256 }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Strong ETag from the latest GET or successful mutation response; for match commands use the current tournament ETag.
+      schema: { type: string, minLength: 3, maxLength: 200 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client-generated unique key (recommended UUID) for this logical mutation; POST /sessions is the documented exception.
+      schema: { type: string, minLength: 16, maxLength: 200 }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque cursor from the previous page's nextCursor.
+      schema: { type: string, maxLength: 512 }
+  responses:
+    Problem:
+      description: Unexpected API error using RFC 9457 Problem Details.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    BadRequest:
+      description: Malformed request or invalid JSON.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: Missing, expired, or invalid session; credentials may be invalid.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    CsrfRejected:
+      description: CSRF token or same-origin check failed.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: Resource does not exist in the current owner scope. Foreign-owned resources are indistinguishable from missing resources.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: State/lifecycle conflict, duplicate normalized name, or idempotency key reused with a different request.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PreconditionFailed:
+      description: If-Match is stale; fetch the latest representation before retrying.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PreconditionRequired:
+      description: Mutation requires an If-Match header.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ValidationFailed:
+      description: Request is syntactically valid but violates field or domain constraints.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ValidationProblem' }
+    RateLimited:
+      description: Request rate exceeded; retry after the indicated interval.
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+  schemas:
+    Id:
+      type: string
+      minLength: 1
+      maxLength: 128
+      description: Opaque resource identifier; never treated as proof of ownership.
+    Session:
+      type: object
+      additionalProperties: false
+      required: [kind, account, csrfToken, expiresAt, pendingGuestClaim]
+      properties:
+        kind: { type: string, enum: [guest, authenticated] }
+        account:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/Account'
+        csrfToken: { type: string, minLength: 32, maxLength: 256 }
+        expiresAt: { type: string, format: date-time }
+        pendingGuestClaim: { type: boolean, description: True only for authenticated sessions with a server-bound guest owner awaiting explicit claim resolution. }
+    Account:
+      type: object
+      additionalProperties: false
+      required: [id, username]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        username: { type: string, minLength: 3, maxLength: 64 }
+    RegisterCredentials:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 64 }
+        password:
+          type: string
+          minLength: 12
+          maxLength: 72
+          format: password
+          description: New account passwords require at least 12 characters. The server additionally rejects passwords over 72 UTF-8 bytes before bcrypt; no truncation is allowed.
+    LoginCredentials:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 64 }
+        password:
+          type: string
+          minLength: 1
+          maxLength: 72
+          format: password
+          description: Accept legacy account passwords shorter than the registration minimum. The server rejects passwords over 72 UTF-8 bytes before bcrypt; no truncation is allowed.
+    TransferSummary:
+      type: object
+      additionalProperties: false
+      required: [status, playersTransferred, teamsTransferred, tournamentsTransferred, conflicts]
+      properties:
+        status: { type: string, enum: [none, transferred, pending_conflicts] }
+        playersTransferred: { type: integer, minimum: 0 }
+        teamsTransferred: { type: integer, minimum: 0 }
+        tournamentsTransferred: { type: integer, minimum: 0 }
+        conflicts:
+          type: array
+          description: Canonical name collisions that require explicit guest record renames before claim.
+          items: { $ref: '#/components/schemas/GuestNameConflict' }
+    GuestNameConflict:
+      type: object
+      additionalProperties: false
+      description: Minimal owner-authorized name-conflict summary; collisionNames contains names only, never IDs or data from an unrelated owner.
+      required: [entityKind, resourceId, displayName, collisionNames]
+      properties:
+        entityKind: { type: string, enum: [player, team] }
+        resourceId: { $ref: '#/components/schemas/Id' }
+        displayName: { type: string }
+        collisionNames:
+          type: array
+          minItems: 1
+          items: { type: string }
+    GuestClaimStatus:
+      type: object
+      additionalProperties: false
+      required: [pending, conflicts]
+      properties:
+        pending: { type: boolean, const: true }
+        conflicts:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/GuestNameConflict' }
+    GuestNameResolution:
+      type: object
+      additionalProperties: false
+      required: [resourceType, guestResourceId, newName]
+      properties:
+        resourceType: { type: string, enum: [player, team] }
+        guestResourceId: { $ref: '#/components/schemas/Id' }
+        newName: { type: string, minLength: 1, maxLength: 80 }
+    AuthResult:
+      type: object
+      additionalProperties: false
+      required: [session, transfer]
+      properties:
+        session: { $ref: '#/components/schemas/Session' }
+        transfer: { $ref: '#/components/schemas/TransferSummary' }
+    Page:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: { type: array }
+        nextCursor:
+          oneOf:
+            - type: 'null'
+            - type: string
+    Player:
+      type: object
+      additionalProperties: false
+      required: [id, name, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, minLength: 1, maxLength: 80 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    PlayerInput:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80, description: 'Unique within owner after Unicode NFKC, Unicode case-fold, trim, and collapse of Unicode whitespace.' }
+    Team:
+      type: object
+      additionalProperties: false
+      required: [id, name, players, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, minLength: 1, maxLength: 80 }
+        players:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items: { $ref: '#/components/schemas/PlayerSummary' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    TeamInput:
+      type: object
+      additionalProperties: false
+      required: [name, playerIds]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80, description: 'Unique within owner after Unicode NFKC, Unicode case-fold, trim, and collapse of Unicode whitespace.' }
+        playerIds:
+          type: array
+          minItems: 2
+          maxItems: 2
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/Id' }
+    PlayerSummary:
+      type: object
+      additionalProperties: false
+      required: [id, name]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string }
+    TournamentMode:
+      type: string
+      enum: [1v1, 2v2_fixed, 2v2_rotating]
+    TournamentStatus:
+      type: string
+      enum: [draft, active, paused, completed, cancelled]
+    CreateTournament:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [name, mode, playerIds]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 100 }
+            mode: { type: string, const: 1v1 }
+            seed: { type: string, minLength: 1, maxLength: 128, description: Optional reproducibility seed; generated and persisted by the server when omitted. }
+            playerIds:
+              type: array
+              minItems: 2
+              maxItems: 32
+              uniqueItems: true
+              items: { $ref: '#/components/schemas/Id' }
+        - type: object
+          additionalProperties: false
+          required: [name, mode, teamIds]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 100 }
+            mode: { type: string, const: 2v2_fixed }
+            seed: { type: string, minLength: 1, maxLength: 128, description: Optional reproducibility seed; generated and persisted by the server when omitted. }
+            teamIds:
+              type: array
+              minItems: 2
+              maxItems: 16
+              uniqueItems: true
+              items: { $ref: '#/components/schemas/Id' }
+        - type: object
+          additionalProperties: false
+          required: [name, mode, playerIds]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 100 }
+            mode: { type: string, const: 2v2_rotating }
+            seed: { type: string, minLength: 1, maxLength: 128, description: Optional reproducibility seed; generated and persisted by the server when omitted. }
+            playerIds:
+              type: array
+              minItems: 4
+              maxItems: 32
+              uniqueItems: true
+              items: { $ref: '#/components/schemas/Id' }
+    TournamentPatch:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [name]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 100 }
+        - type: object
+          additionalProperties: false
+          required: [mode, playerIds]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 100 }
+            mode: { type: string, const: 1v1 }
+            playerIds:
+              type: array
+              minItems: 2
+              maxItems: 32
+              uniqueItems: true
+              items: { $ref: '#/components/schemas/Id' }
+        - type: object
+          additionalProperties: false
+          required: [mode, playerIds]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 100 }
+            mode: { type: string, const: 2v2_rotating }
+            playerIds:
+              type: array
+              minItems: 4
+              maxItems: 32
+              uniqueItems: true
+              items: { $ref: '#/components/schemas/Id' }
+        - type: object
+          additionalProperties: false
+          required: [mode, teamIds]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 100 }
+            mode: { type: string, const: 2v2_fixed }
+            teamIds:
+              type: array
+              minItems: 2
+              maxItems: 16
+              uniqueItems: true
+              items: { $ref: '#/components/schemas/Id' }
+    Tournament:
+      type: object
+      additionalProperties: false
+      required: [id, name, mode, status, participants, pausedPlayerIds, version, seed, generatorVersion, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, minLength: 1, maxLength: 100 }
+        mode: { $ref: '#/components/schemas/TournamentMode' }
+        status: { $ref: '#/components/schemas/TournamentStatus' }
+        participants:
+          type: array
+          maxItems: 32
+          items: { $ref: '#/components/schemas/TournamentParticipant' }
+        pausedPlayerIds:
+          type: array
+          maxItems: 32
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/Id' }
+        version: { type: integer, minimum: 1 }
+        seed: { type: string, minLength: 1, maxLength: 128 }
+        generatorVersion: { type: string, minLength: 1, maxLength: 64 }
+        currentMatchId:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/Id'
+        startedAt: { type: [string, 'null'], format: date-time }
+        pausedAt: { type: [string, 'null'], format: date-time }
+        completedAt: { type: [string, 'null'], format: date-time }
+        cancelledAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    TournamentParticipant:
+      type: object
+      additionalProperties: false
+      required: [id, name, kind]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string }
+        kind: { type: string, enum: [player, team] }
+        players:
+          type: array
+          maxItems: 2
+          items: { $ref: '#/components/schemas/PlayerSummary' }
+    Schedule:
+      type: object
+      additionalProperties: false
+      required: [tournamentId, seed, generatorVersion, rounds]
+      properties:
+        tournamentId: { $ref: '#/components/schemas/Id' }
+        seed: { type: string }
+        generatorVersion: { type: string }
+        rounds:
+          type: array
+          items: { $ref: '#/components/schemas/ScheduleRound' }
+    ScheduleRound:
+      type: object
+      additionalProperties: false
+      required: [round, matchIds, byeEvents, restPlayerIds]
+      properties:
+        round: { type: integer, minimum: 1 }
+        matchIds:
+          type: array
+          items: { $ref: '#/components/schemas/Id' }
+        byeEvents:
+          type: array
+          description: Explicit 1v1 player or fixed-team byes; never match/standings records.
+          items: { $ref: '#/components/schemas/ByeEvent' }
+        restPlayerIds:
+          type: array
+          description: Rotating 2v2 participants resting for this live slot; rest is not a scored match.
+          items: { $ref: '#/components/schemas/Id' }
+    ByeEvent:
+      type: object
+      additionalProperties: false
+      required: [subjectType, subjectId]
+      properties:
+        subjectType: { type: string, enum: [player, fixed_team] }
+        subjectId: { $ref: '#/components/schemas/Id' }
+    MatchStatus:
+      type: string
+      enum: [scheduled, in_progress, paused, completed, skipped]
+    Match:
+      type: object
+      description: Exactly two opposing sides, with match-local stable IDs and round/sequence ordering.
+      additionalProperties: false
+      required: [id, round, sequence, status, sides, version, createdAt, winnerSide, pauseIntervals]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        round: { type: integer, minimum: 1 }
+        sequence: { type: integer, minimum: 1 }
+        status: { $ref: '#/components/schemas/MatchStatus' }
+        sides:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items: { $ref: '#/components/schemas/MatchSide' }
+        winnerSide:
+          oneOf:
+            - type: 'null'
+            - type: integer
+              enum: [1, 2]
+        startTime: { type: [string, 'null'], format: date-time }
+        endTime: { type: [string, 'null'], format: date-time }
+        pauseIntervals:
+          type: array
+          items: { $ref: '#/components/schemas/MatchPauseInterval' }
+        createdAt: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
+    MatchPauseInterval:
+      type: object
+      additionalProperties: false
+      required: [pausedAt, resumedAt, reason]
+      properties:
+        pausedAt: { type: string, format: date-time }
+        resumedAt: { type: [string, 'null'], format: date-time }
+        reason: { type: string, enum: [organizer, participant_unavailable] }
+    MatchSide:
+      type: object
+      description: One of exactly two opposing sides; participant IDs are unique within the match and belong to this tournament's roster.
+      additionalProperties: false
+      required: [participantId, name, players, score]
+      properties:
+        participantId: { $ref: '#/components/schemas/Id' }
+        name: { type: string }
+        players:
+          type: array
+          minItems: 1
+          maxItems: 2
+          items: { $ref: '#/components/schemas/PlayerSummary' }
+        score: { type: [integer, 'null'], minimum: 0 }
+    RecordResult:
+      type: object
+      additionalProperties: false
+      required: [scores]
+      properties:
+        scores:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items: { type: integer, minimum: 0, maximum: 1000000 }
+    StandingsView:
+      type: string
+      enum: [players, teams]
+    StandingRow:
+      type: object
+      additionalProperties: false
+      required: [rank, subjectType, name, playerIds, matchesPlayed, wins, draws, losses, pointsFor, pointsAgainst, pointDifferential]
+      properties:
+        rank: { type: integer, minimum: 1, description: Competitive rank; tied rows share rank and following ranks use competition ranking. }
+        subjectType: { type: string, enum: [player, single_player_side, fixed_team, rotating_pair] }
+        name: { type: string }
+        playerIds:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/Id' }
+        teamId: { $ref: '#/components/schemas/Id', description: Stable reusable team ID for a fixed-team row when one exists. }
+        matchesPlayed: { type: integer, minimum: 0 }
+        wins: { type: integer, minimum: 0 }
+        draws: { type: integer, minimum: 0 }
+        losses: { type: integer, minimum: 0 }
+        pointsFor: { type: integer, minimum: 0 }
+        pointsAgainst: { type: integer, minimum: 0 }
+        pointDifferential: { type: integer }
+    Standings:
+      type: object
+      additionalProperties: false
+      required: [scope, view, tournamentId, tournamentVersion, rows, calculatedAt]
+      properties:
+        scope: { type: string, enum: [tournament, overall] }
+        view: { $ref: '#/components/schemas/StandingsView' }
+        tournamentId:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/Id'
+        tournamentVersion:
+          oneOf:
+            - type: 'null'
+            - type: integer
+              minimum: 1
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/StandingRow' }
+        calculatedAt: { type: string, format: date-time }
+    FieldError:
+      type: object
+      additionalProperties: false
+      required: [pointer, code, message]
+      properties:
+        pointer: { type: string, description: 'JSON Pointer to invalid field, or empty string for a request-level error.' }
+        code: { type: string, description: Stable machine-readable validation code. }
+        message: { type: string }
+    Problem:
+      type: object
+      description: RFC 9457 Problem Details; extension members may be added.
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri-reference }
+        title: { type: string }
+        status: { type: integer, minimum: 400, maximum: 599 }
+        detail: { type: string }
+        instance: { type: string, format: uri-reference }
+        code: { type: string, description: Stable machine-readable application code. }
+        traceId: { type: string }
+    ValidationProblem:
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [errors]
+          properties:
+            errors:
+              type: array
+              items: { $ref: '#/components/schemas/FieldError' }
