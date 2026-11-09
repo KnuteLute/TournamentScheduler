@@ -4,9 +4,11 @@ on:
   pull_request:
     branches:
       - upgrade/tournament-v2
+      - main
   push:
     branches:
       - upgrade/tournament-v2
+      - main
   schedule:
     - cron: '17 6 * * 1'
   workflow_dispatch:

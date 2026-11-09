@@ -4,9 +4,11 @@ on:
   pull_request:
     branches:
       - upgrade/tournament-v2
+      - main
   push:
     branches:
       - upgrade/tournament-v2
+      - main
   merge_group:
     types: [checks_requested]
   schedule:
@@ -114,9 +116,8 @@ jobs:
       TEST_API_ORIGIN: http://127.0.0.1:4173
       E2E_BASE_URL: http://127.0.0.1:4173
       PORT: "4173"
-      HOST: 127.0.0.1
       API_ORIGIN: http://127.0.0.1:4173
-      API_SESSION_HASH_SECRET: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+      API_SESSION_HASH_SECRET: Y2ktb25seSBzeW50aGV0aWMgc2Vzc2lvbiBoYXNoIHNlY3JldCBmb3IgZGlzcG9zYWJsZSB0ZXN0cyAzMiBieXRlcw
       API_TRUSTED_PROXY_HOPS: "0"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6.1.0
@@ -180,9 +181,8 @@ jobs:
       TEST_API_ORIGIN: http://127.0.0.1:4173
       E2E_BASE_URL: http://127.0.0.1:4173
       PORT: "4173"
-      HOST: 127.0.0.1
       API_ORIGIN: http://127.0.0.1:4173
-      API_SESSION_HASH_SECRET: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+      API_SESSION_HASH_SECRET: Y2ktb25seSBzeW50aGV0aWMgc2Vzc2lvbiBoYXNoIHNlY3JldCBmb3IgZGlzcG9zYWJsZSB0ZXN0cyAzMiBieXRlcw
       API_TRUSTED_PROXY_HOPS: "0"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6.1.0
