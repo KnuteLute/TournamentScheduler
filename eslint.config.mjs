@@ -33,7 +33,6 @@ export default [
       globals: {
         console: "readonly",
         process: "readonly",
-        Buffer: "readonly",
         fetch: "readonly",
         window: "readonly",
         document: "readonly",
@@ -66,13 +65,14 @@ export default [
     },
   },
   {
-    files: ["tests/**/*.js"],
+    files: ["tests/**/*.js", "tests/**/*.cjs"],
     languageOptions: {
       globals: {
         require: "readonly",
         module: "readonly",
         __dirname: "readonly",
         process: "readonly",
+        Buffer: "readonly",
         console: "readonly",
         describe: "readonly",
         test: "readonly",
