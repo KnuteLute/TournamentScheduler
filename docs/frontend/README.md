@@ -15,7 +15,18 @@ npm test
 npm run build
 ```
 
-The Vite development server serves the SPA at `/app/`; API requests stay same-origin at `/api/v1`. The production build uses base `/app/` and writes to `../web/public/app`, matching the existing Express/Vercel static path. The frontend agent does not own `web/**`; verify the integration server's static mount and SPA fallback before release.
+### Local development servers
+
+Run the API server and Vite in separate terminals from the repository root. Start the API server with the Vite browser origin allowed by the backend's origin/CSRF checks:
+
+```sh
+API_ORIGIN=http://localhost:5173 npm run dev --prefix web
+npm run dev --prefix frontend
+```
+
+The API server listens on `127.0.0.1:3000` (keep that port available); open the frontend at `http://localhost:5173/app/`. Vite's development-only `/api` proxy forwards to `http://127.0.0.1:3000` with `changeOrigin: false` and does not rewrite the path or `Origin` header. The API therefore validates the actual browser origin `http://localhost:5173`; the proxy target is not an allowed-origin setting. Do not configure the proxy to replace or trust `Origin`. If the backend origin/port changes, update the frontend proxy and the backend `API_ORIGIN` deliberately.
+
+The production build uses base `/app/` and writes to `../web/public/app`, matching the existing Express/Vercel static path. The Vite proxy is not included in production; verify the integration server's static mount and SPA fallback before release.
 
 ## Root workspace coordination
 
