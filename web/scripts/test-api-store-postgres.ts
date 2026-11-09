@@ -4,6 +4,9 @@ import { ApiStore, StoreOperation, StoreRequest, StoreResult, StoreConflictError
 import { PostgresApiStore } from '../src/persistence/api-store';
 import { PostgresDatabase, postgresPoolConfig } from '../src/persistence/database';
 import { canonicalizeName } from '../src/domain/names';
+import httpRequest = require('supertest');
+import { createApplication } from '../src/app';
+import { createApiConfig } from '../src/config/api';
 
 type Actor = VerifiedActor;
 type Result = StoreResult<Record<string, any>>;
@@ -48,7 +51,17 @@ async function main(): Promise<void> {
   const covered = new Set<StoreOperation>();
   const call = async (value: StoreRequest): Promise<Result> => {
     covered.add(value.operation);
-    return await store.execute(value) as Result;
+    try {
+      return await store.execute(value) as Result;
+    } catch (error) {
+      const code=error&&typeof error==='object'&&'code' in error&&typeof error.code==='string'?error.code:undefined;
+      const stack=error&&typeof error==='object'&&'stack' in error&&typeof error.stack==='string'?error.stack:'';
+      const storeLine=stack.match(/api-store\.ts:(\d+):\d+/)?.[1];
+      if(error&&typeof error==='object')Object.assign(error,{
+        testOperation:value.operation,...(code?{testCode:code}:{}),...(storeLine?{testStoreLine:storeLine}:{}),
+      });
+      throw error;
+    }
   };
   const mutate = async (
     operation: StoreOperation,
@@ -61,6 +74,13 @@ async function main(): Promise<void> {
   try {
     const migrations = await database.query<{ max_version: number | null }>('SELECT max(version) AS max_version FROM schema_migrations');
     if (Number(migrations[0]?.max_version ?? 0) < 4) throw new Error('Test database is not migrated through version 4');
+
+    const smokeConfig=createApiConfig({NODE_ENV:'test',API_ORIGIN:'http://127.0.0.1',API_SESSION_HASH_SECRET:randomBytes(32).toString('base64url')});
+    const guestBootstrap=await httpRequest(createApplication(store,smokeConfig)).post('/api/v1/sessions')
+      .set('Origin',smokeConfig.origin).send({});
+    assert.strictEqual(guestBootstrap.status,201,'HTTP guest bootstrap creates a session through the mounted API');
+    assert.ok(guestBootstrap.headers['set-cookie'],'HTTP guest bootstrap sets the opaque session cookie');
+    assert.strictEqual(typeof guestBootstrap.body.csrfToken,'string');
 
     // Account registration, credential lookup, session lookup, and auth retry
     // prove that retries create new hashes and never replay old token material.
@@ -244,7 +264,7 @@ async function main(): Promise<void> {
     await assert.rejects(()=>mutate('players.update',actor,{resourceId:String(targetPlayerA.value.id),expectedETag:`"${targetPlayerA.etag}"`,input:{name:'Stale Rename'}}),StorePreconditionFailedError);
     await assert.rejects(()=>mutate('players.update',actor,{resourceId:String(targetPlayerA.value.id),expectedETag:`"${targetPlayerA.etag}"`,input:{name:'Stale Rename'}}),StorePreconditionFailedError);
     const replayKey=randomUUID();const replayHash=hash('same-player-replay');
-    const replayReq=request('players.update',actor,{resourceId:String(targetPlayerA.value.id),expectedETag:'"v1"',input:{name:'Shared Player Updated'},idempotency:{key:replayKey,requestHash:replayHash,anchor:'actor-owner'}});
+    const replayReq=request('players.update',actor,{resourceId:String(targetPlayerA.value.id),expectedETag:`"${playerUpdated.etag}"`,input:{name:'Shared Player Updated'},idempotency:{key:replayKey,requestHash:replayHash,anchor:'actor-owner'}});
     const firstReplay=await call(replayReq);const secondReplay=await call(replayReq);assert.deepStrictEqual(secondReplay,firstReplay);
     await assert.rejects(()=>call({...replayReq,idempotency:{key:replayKey,requestHash:hash('different'),anchor:'actor-owner'}}),StoreConflictError);
 
@@ -284,6 +304,48 @@ async function main(): Promise<void> {
     await mutate('tournaments.finish',actor,{resourceId:String(tournament.value.id),expectedETag:`"${resumedTournament.etag}"`});
     await call(request('standings.getOverall',actor,{query:{view:'players'}}));
 
+    const rotating=await mutate('tournaments.create',actor,{input:{name:'Rotating Result Correction',mode:'2v2_rotating',
+      playerIds:[String(targetPlayerA.value.id),String(targetPlayerB.value.id),guestPlayers[0]!,guestPlayers[1]!],seed:'rotating-correction-test-seed'}});
+    const rotatingStarted=await mutate('tournaments.start',actor,{resourceId:String(rotating.value.id),expectedETag:`"${rotating.etag}"`});
+    const rotatingMatch=String((await database.query<{external_id:string}>(
+      `SELECT external_id FROM matches WHERE tournament_id=(SELECT id FROM tournaments WHERE public_id=$1::uuid) ORDER BY sequence_no LIMIT 1`,
+      [rotating.value.id],
+    ))[0]?.external_id);
+    const rotatingMatchStarted=await mutate('matches.start',actor,{resourceId:String(rotating.value.id),matchId:rotatingMatch,expectedETag:`"${rotatingStarted.etag}"`});
+    const rotatingResult=await mutate('matches.recordResult',actor,{resourceId:String(rotating.value.id),matchId:rotatingMatch,
+      expectedETag:`"${rotatingMatchStarted.etag}"`,input:{scores:[4,2]}});
+    const scheduledBeforeCorrection=await database.query<{external_id:string;count:number}>(
+      `SELECT external_id,count(*) OVER()::integer count FROM matches
+       WHERE tournament_id=(SELECT id FROM tournaments WHERE public_id=$1::uuid) AND normalized_status='scheduled'`,
+      [rotating.value.id],
+    );
+    assert.strictEqual(Number(scheduledBeforeCorrection[0]?.count),1,'completion appends exactly one next rotating match');
+    const correctedRotatingResult=await mutate('matches.recordResult',actor,{resourceId:String(rotating.value.id),matchId:rotatingMatch,
+      expectedETag:`"${rotatingResult.etag}"`,input:{scores:[2,4]}});
+    assert.deepStrictEqual(correctedRotatingResult.value.match.sides.map((side:any)=>side.score),[2,4]);
+    const rotatingAfterCorrection=await database.query<{total:number;completed:number;scheduled:number;scheduled_id:string|null}>(
+      `SELECT count(*)::integer total,
+        count(*) FILTER (WHERE normalized_status='completed')::integer completed,
+        count(*) FILTER (WHERE normalized_status='scheduled')::integer scheduled,
+        max(external_id) FILTER (WHERE normalized_status='scheduled') scheduled_id
+       FROM matches WHERE tournament_id=(SELECT id FROM tournaments WHERE public_id=$1::uuid)`,
+      [rotating.value.id],
+    );
+    assert.deepStrictEqual(rotatingAfterCorrection[0],{
+      total:2,completed:1,scheduled:1,scheduled_id:scheduledBeforeCorrection[0]!.external_id,
+    },'correcting a rotating result must preserve the already-scheduled next match without appending another');
+    const rotatingSkipped=await mutate('matches.skip',actor,{resourceId:String(rotating.value.id),
+      matchId:scheduledBeforeCorrection[0]!.external_id,expectedETag:`"${correctedRotatingResult.etag}"`});
+    assert.ok(rotatingSkipped.etag);
+    const afterRotatingSkip=await database.query<{total:number;skipped:number;scheduled:number}>(
+      `SELECT count(*)::integer total,
+        count(*) FILTER (WHERE normalized_status='skipped')::integer skipped,
+        count(*) FILTER (WHERE normalized_status='scheduled')::integer scheduled
+       FROM matches WHERE tournament_id=(SELECT id FROM tournaments WHERE public_id=$1::uuid)`,
+      [rotating.value.id],
+    );
+    assert.deepStrictEqual(afterRotatingSkip[0],{total:3,skipped:1,scheduled:1},'skipping the current rotating match generates one next match');
+
     const cancelDraft=await mutate('tournaments.create',actor,{input:{name:'Cancel Me',mode:'1v1',playerIds:[String(targetPlayerA.value.id),String(targetPlayerB.value.id)]}});
     const cancelStart=await mutate('tournaments.start',actor,{resourceId:String(cancelDraft.value.id),expectedETag:`"${cancelDraft.etag}"`});
     await mutate('tournaments.cancel',actor,{resourceId:String(cancelDraft.value.id),expectedETag:`"${cancelStart.etag}"`});
@@ -305,7 +367,7 @@ async function main(): Promise<void> {
     // Verify expiry and explicit revocation without exposing credentials.
     const expiryHash=randomBytes(32);
     await call(request('session.createGuest',null,{credentials:{...credential(),sessionTokenHash:expiryHash}}));
-    await database.execute(`UPDATE guest_sessions SET expires_at=now()-interval '1 second' WHERE token_hash=$1`,[expiryHash]);
+    await database.execute(`UPDATE guest_sessions SET created_at=now()-interval '2 seconds',expires_at=now()-interval '1 second' WHERE token_hash=$1`,[expiryHash]);
     assert.strictEqual(await store.lookupSessionByTokenHash(expiryHash,new Date()),null);
     const revokeHash=randomBytes(32);
     await call(request('session.createGuest',null,{credentials:{...credential(),sessionTokenHash:revokeHash}}));
@@ -336,7 +398,15 @@ async function lookupByHash(hash: Uint8Array, store: ApiStore) {
   return store.lookupSessionByTokenHash(hash,new Date());
 }
 
-main().catch(()=>{
-  console.error('ApiStore PostgreSQL checks failed; no connection details or credential material were emitted.');
+main().catch((error: unknown)=>{
+  const failure=error&&typeof error==='object'?error as {name?:unknown;code?:unknown;stack?:unknown;testOperation?:unknown;testCode?:unknown;testStoreLine?:unknown}:{};
+  const name=typeof failure.name==='string'&&/^[A-Za-z][A-Za-z0-9]*$/.test(failure.name)?failure.name:'Error';
+  const rawCode=typeof failure.testCode==='string'?failure.testCode:failure.code;
+  const code=typeof rawCode==='string'&&/^[A-Z0-9_]{1,32}$/.test(rawCode)?` ${rawCode}`:'';
+  const operation=typeof failure.testOperation==='string'&&/^[a-zA-Z.]+$/.test(failure.testOperation)?failure.testOperation:undefined;
+  const storeLine=typeof failure.testStoreLine==='string'&&/^\d+$/.test(failure.testStoreLine)?failure.testStoreLine:undefined;
+  const stack=typeof failure.stack==='string'?failure.stack:'';
+  const line=stack.match(/test-api-store-postgres\.ts:(\d+):\d+/)?.[1];
+  console.error(`ApiStore PostgreSQL checks failed${line?` at test-api-store-postgres.ts:${line}`:''}${operation?` during ${operation}`:''}${storeLine?` in api-store.ts:${storeLine}`:''} (${name}${code}); no connection details or credential material were emitted.`);
   process.exitCode=1;
 });

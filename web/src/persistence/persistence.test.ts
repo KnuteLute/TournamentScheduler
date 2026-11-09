@@ -118,7 +118,7 @@ export async function runPersistenceUnitTests(): Promise<void> {
   const queryable: Queryable = {
     query: async <Row extends import('pg').QueryResultRow = import('pg').QueryResultRow>(sql: string, values: readonly unknown[] = []) => {
       statements.push({ sql, values });
-      return [{ request_count: 1, reset_at: new Date('2030-01-01T00:00:00.000Z') } as unknown as Row];
+      return [{ request_count: 1, reset_at: new Date('2030-01-01T00:00:00.000Z'), allowed: true } as unknown as Row];
     },
     execute: async (sql: string, values: readonly unknown[] = []) => {
       statements.push({ sql, values });
@@ -132,7 +132,16 @@ export async function runPersistenceUnitTests(): Promise<void> {
     allowed: true, retryAfterSeconds: 0,
   });
   assert.match(statements[0]!.sql, /ON CONFLICT \(bucket_key_hash\) DO UPDATE/);
+  assert.match(statements[0]!.sql, /RETURNING request_count, reset_at, request_count <= \$4 AS allowed/);
+  assert.match(statements[0]!.sql, /current_bucket\.request_count <= \$4 THEN current_bucket\.request_count \+ 1/);
   assert.deepStrictEqual(statements[0]!.values, [Buffer.from(bucketHash, 'hex'), requestTime, 60_000, 3]);
+  const explicitlyBlocked = await consumeRateLimitBucket({
+    query: async <Row extends import('pg').QueryResultRow = import('pg').QueryResultRow>() => [
+      { request_count: 3, reset_at: new Date(requestTime.getTime() + 60_000), allowed: false } as unknown as Row,
+    ],
+    execute: async () => 0,
+  }, { bucketHash, now: requestTime, maximum: 3, windowMs: 60_000 });
+  assert.deepStrictEqual(explicitlyBlocked, { allowed: false, retryAfterSeconds: 60 }, 'use the SQL admission decision independently of the capped count');
   assert.strictEqual(await pruneExpiredRateLimitBuckets(queryable, { batchSize: 2 }), 2);
   assert.match(statements[1]!.sql, /FOR UPDATE SKIP LOCKED/);
   await assert.rejects(() => consumeRateLimitBucket(queryable, {

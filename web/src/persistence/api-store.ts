@@ -193,6 +193,10 @@ function dateText(value: Date | string | null | undefined): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+function safeSideId(value: string): string {
+  return value.replace(/\u0000/g, '\\u0000');
+}
+
 function quoteEtag(version: number): string {
   return `v${version}`;
 }
@@ -793,7 +797,7 @@ export class PostgresApiStore implements ApiStore {
     await tx.execute(`INSERT INTO data_owners (id,guest_session_id,status) VALUES ($1,$2,'active')`, [ownerId, sessionId]);
     await tx.execute(
       `INSERT INTO audit_events (id,actor_type,guest_session_id,owner_id,action,entity_type,entity_id,details)
-       VALUES ($1,'guest',$2,$3,'session.created','guest_session',$2,'{}'::jsonb)`,[randomUUID(),sessionId,ownerId],
+       VALUES ($1,'guest',$2,$3,'session.created','guest_session',$4,'{}'::jsonb)`,[randomUUID(),sessionId,ownerId,sessionId],
     );
     return { status: 201, value: { version: 1 } as T, etag: quoteEtag(1) };
   }
@@ -843,8 +847,9 @@ export class PostgresApiStore implements ApiStore {
       if(!expected.has(key))continue;
       const table=type==='player'?'players':type==='team'?'teams':null;
       if(!table)continue;
-      const cleared=await tx.execute(`UPDATE ${table} SET name_key=NULL WHERE id::text=$1 AND owner_id=$2 AND deleted_at IS NULL`,[id,guestOwnerId]);
-      if(!cleared)throw new StoreNotFoundError();
+      const renamed=await tx.execute(`UPDATE ${table} SET name_key=$1 WHERE id::text=$2 AND owner_id=$3 AND deleted_at IS NULL`,
+        [`claim-${randomUUID()}`,id,guestOwnerId]);
+      if(!renamed)throw new StoreNotFoundError();
     }
     for (const resolution of resolutions) {
       const type = text(resolution.resourceType);
@@ -1322,20 +1327,20 @@ export class PostgresApiStore implements ApiStore {
       [tournamentId,ownerId,match.id],
     );
     const matchId=existing[0]?.id;
-    const sideJson=match.sides.map(side=>({id:side.id,participants:side.players.map(player=>({id:player.id,name:player.name})),score:side.score}));
+    const sideJson=match.sides.map(side=>({id:safeSideId(side.id),participants:side.players.map(player=>({id:player.id,name:player.name})),score:side.score}));
     let storedId=matchId;
     if(storedId===undefined){
       const generated=await tx.query<{id:number}>(
         `INSERT INTO matches (public_id,external_id,tournament_id,owner_id,sequence_no,round,normalized_status,status,
           winner_side,version,teams,mode,start_time,normalized_started_at,end_time,completed_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10::jsonb,$11,$12,$12,$13,$13) RETURNING id`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7::text,$7::text,$8,$9,$10::jsonb,$11,$12,$12,$13,$13) RETURNING id`,
         [randomUUID(),match.id,tournamentId,ownerId,match.sequence,match.round,match.status,this.winnerSide(match),match.version,
           JSON.stringify(sideJson),tournament.row.mode,match.startTime?new Date(match.startTime):null,match.endTime?new Date(match.endTime):null],
       );
       storedId=generated[0]?.id;
     }else{
       await tx.execute(
-        `UPDATE matches SET round=$1,normalized_status=$2,status=$2,winner_side=$3,version=$4,teams=$5::jsonb,
+        `UPDATE matches SET round=$1,normalized_status=$2::text,status=$2::text,winner_side=$3,version=$4,teams=$5::jsonb,
           start_time=$6,normalized_started_at=$6,end_time=$7,completed_at=$7 WHERE id=$8 AND tournament_id=$9 AND owner_id=$10`,
         [match.round,match.status,this.winnerSide(match),match.version,JSON.stringify(sideJson),
           match.startTime?new Date(match.startTime):null,match.endTime?new Date(match.endTime):null,storedId,tournamentId,ownerId],
@@ -1349,7 +1354,7 @@ export class PostgresApiStore implements ApiStore {
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
          ON CONFLICT (match_id,side_no) DO UPDATE SET score=EXCLUDED.score,side_label=EXCLUDED.side_label,
            side_id=EXCLUDED.side_id,fixed_team_id=EXCLUDED.fixed_team_id,fixed_team_name_snapshot=EXCLUDED.fixed_team_name_snapshot`,
-        [storedId,tournamentId,ownerId,index+1,side.score,side.fixedTeamName??side.players.map(p=>p.name).join(' + '),side.id,
+        [storedId,tournamentId,ownerId,index+1,side.score,side.fixedTeamName??side.players.map(p=>p.name).join(' + '),safeSideId(side.id),
           side.fixedTeamId??null,side.fixedTeamName??null],
       );
       for(let position=0;position<side.players.length;position++){
@@ -1488,7 +1493,7 @@ export class PostgresApiStore implements ApiStore {
 
   private matchValue(match:DomainMatch,createdAt:Date):Record<string,unknown>{
     return {id:match.id,round:match.round,sequence:match.sequence,status:match.status,
-      sides:match.sides.map(side=>({participantId:side.fixedTeamId??side.id,name:side.fixedTeamName??side.players.map(player=>player.name).join(' + '),
+      sides:match.sides.map(side=>({participantId:side.fixedTeamId??safeSideId(side.id),name:side.fixedTeamName??side.players.map(player=>player.name).join(' + '),
         players:side.players.map(player=>({id:player.id,name:player.name})),score:side.score})),
       winnerSide:this.winnerSide(match),startTime:match.startTime??null,endTime:match.endTime??null,
       pauseIntervals:match.pauseIntervals,version:match.version,createdAt:dateText(createdAt)};
@@ -1551,7 +1556,10 @@ export class PostgresApiStore implements ApiStore {
     let matches=loaded.state.matches.map(match=>match.id===updatedMatch.id?updatedMatch:match);
     let nextMatch:DomainMatch|undefined;
     let restPlayerIds:string[]=[];
-    if(loaded.state.mode==='2v2_rotating'&&(updatedMatch.status==='completed'||updatedMatch.status==='skipped')){
+    const resolvedCurrent=(request.operation==='matches.recordResult'&&selected.status!=='completed'&&updatedMatch.status==='completed')
+      ||(request.operation==='matches.skip'&&selected.status!=='skipped'&&updatedMatch.status==='skipped');
+    const hasUnresolvedMatch=matches.some(match=>match.status==='scheduled'||match.status==='in_progress'||match.status==='paused');
+    if(loaded.state.mode==='2v2_rotating'&&resolvedCurrent&&!hasUnresolvedMatch){
       const generated=generateNextRotatingMatch(matches,loaded.state.participants,loaded.state.pausedPlayerIds,loaded.state.seed,loaded.state.generatorVersion);
       if(generated){nextMatch=generated.match;restPlayerIds=generated.restPlayerIds;matches=matches.concat(nextMatch);}
     }
