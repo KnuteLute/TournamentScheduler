@@ -38,6 +38,7 @@ The standalone lockfile retains the toolchain's declared dependency ranges. Appl
 
 - The client sends `credentials: 'same-origin'`, disables cached API reads, and sends the current session CSRF token on cookie-authenticated mutations.
 - Mutations use a new `Idempotency-Key`. The guest-session bootstrap is the documented exception.
+- Login accepts legacy passwords from 1 through 72 characters; registration requires at least 12 characters. Both forms give UTF-8 byte-limit feedback at 72 bytes. The browser checks are usability aids only; the API remains authoritative for password bounds and authentication.
 - Create requests do not send `If-Match`. Before editing/deleting an existing player or team, the client GETs that resource and uses its latest ETag. Before tournament lifecycle/availability commands and match commands/results, it GETs the tournament and uses the parent tournament ETag. For guest claim, the client GETs `/session/claim` to load pending conflict summaries and uses its session ETag for the CSRF-protected, idempotent POST.
 - The frontend does not generate schedules, calculate standings, or authorize actions. It renders server responses and reloads after accepted mutations. Form constraints are usability hints only; API validation and authorization remain authoritative.
 - RFC problem responses are surfaced with localized status guidance for session/authentication (401), CSRF/origin rejection (403), conflicts (409), stale preconditions (412), field validation (422), and rate limiting (429).

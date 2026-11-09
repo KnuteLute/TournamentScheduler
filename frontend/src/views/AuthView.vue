@@ -9,6 +9,8 @@ const router = useRouter()
 const registering = ref(false)
 const username = ref('')
 const password = ref('')
+const passwordByteLength = computed(() => new TextEncoder().encode(password.value).length)
+const passwordCharacterLength = computed(() => [...password.value].length)
 const busy = ref(false)
 const error = ref('')
 const names = ref<Record<string, string>>({})
@@ -17,6 +19,14 @@ const claimPendingWithoutDetails = computed(() => session.session?.pendingGuestC
 
 async function submit() {
   error.value = ''
+  if (passwordByteLength.value > 72) {
+    error.value = 'Passordet kan være maksimalt 72 byte i UTF-8.'
+    return
+  }
+  if (registering.value && passwordCharacterLength.value < 12) {
+    error.value = 'Passordet må være minst 12 tegn ved registrering.'
+    return
+  }
   busy.value = true
   try {
     await session.authenticate(username.value, password.value, registering.value)
@@ -115,13 +125,13 @@ async function loadPendingClaim() {
           <label class="field-label">Passord<input
             v-model="password"
             required
-            minlength="12"
-            maxlength="128"
+            :minlength="registering ? 12 : 1"
+            maxlength="72"
             :autocomplete="registering ? 'new-password' : 'current-password'"
             type="password"
           ></label>
           <p class="helper-text">
-            {{ registering ? 'Bruk minst 12 tegn.' : 'Passordet sendes sikkert til serveren.' }}
+            {{ registering ? 'Bruk minst 12 tegn.' : 'Eldre kontoer kan ha kortere passord.' }} Maks 72 byte i UTF-8 ({{ passwordByteLength }}/72).
           </p>
           <p
             v-if="error"
