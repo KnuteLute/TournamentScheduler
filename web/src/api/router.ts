@@ -495,16 +495,16 @@ export function createApiRouter(store: ApiStore, config: ApiConfig): Router {
 	};
 
 	router.get("/health/live", (_req, res) => {
-		res.set("Cache-Control", "no-store").status(200).json({ status: "ok" });
+		res.set("Cache-Control", "no-store").status(200).json({ status: "live" });
 	});
 	router.get("/health/ready", asyncRoute(async (_req, res) => {
 		const healthy = store.healthCheck ? await store.healthCheck() : false;
 		res.set("Cache-Control", "no-store");
 		if (!healthy) {
-			sendProblem(res, new ApiProblem(503, "service-unavailable", "Service Unavailable", "The API data service is unavailable."));
+			res.status(503).json({ status: "not_ready" });
 			return;
 		}
-		res.status(200).json({ status: "ok" });
+		res.status(200).json({ status: "ready" });
 	}));
 
 	router.post("/sessions", asyncRoute(async (req, res) => {
