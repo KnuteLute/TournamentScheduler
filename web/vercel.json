@@ -13,8 +13,8 @@
       "src": "../frontend/package.json",
       "use": "@vercel/static-build",
       "config": {
-        "buildCommand": "npm run build",
-        "distDir": "../web/public/app"
+        "buildCommand": "npm run build -- --outDir=dist",
+        "distDir": "dist"
       }
     }
   ],
