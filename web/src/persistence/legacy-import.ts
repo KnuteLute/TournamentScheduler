@@ -24,6 +24,8 @@ interface LegacyJsonRow extends Record<string, unknown> {
 
 const ENTITIES: LegacyEntity[] = ['users', 'players', 'tournaments', 'matches'];
 export const MAX_LOCAL_IMPORT_BYTES = 50 * 1024 * 1024;
+export const MAX_LOCAL_IMPORT_RECORDS = 10_000;
+export const MAX_POSTGRES_IMPORT_RECORDS_PER_BATCH = 1_000;
 
 function digest(value: string | Buffer): Buffer {
   return createHash('sha256').update(value).digest();
@@ -218,12 +220,25 @@ export async function inspectLocalJson(
   }
   const { rows, malformed } = jsonEntities(parsed, filePath);
   const counts = Object.fromEntries(ENTITIES.map(entity => [entity, rows[entity].length]));
+  const recordCount = Object.values(counts).reduce((sum, count) => sum + count, 0);
   if (!apply) {
     return {
       source: 'local_json', sourceLabel: label, dryRun: true, counts,
-      quarantined: Object.values(counts).reduce((sum, count) => sum + count, 0),
+      quarantined: recordCount,
       needsReview: malformed, noOp: false,
-      warnings: ['unclaimed_local_data_is_quarantined', ...(malformed ? ['malformed_records_skipped'] : [])],
+      warnings: [
+        'unclaimed_local_data_is_quarantined',
+        ...(recordCount > MAX_LOCAL_IMPORT_RECORDS ? ['source_exceeds_import_batch_bound'] : []),
+        ...(malformed ? ['malformed_records_skipped'] : []),
+      ],
+    };
+  }
+
+  if (recordCount > MAX_LOCAL_IMPORT_RECORDS) {
+    return {
+      source: 'local_json', sourceLabel: label, dryRun: false, counts,
+      quarantined: 0, needsReview: malformed, noOp: true,
+      warnings: ['source_exceeds_import_batch_bound'],
     };
   }
 
@@ -261,7 +276,6 @@ export async function inspectLocalJson(
         );
       }
     }
-    const recordCount = Object.values(counts).reduce((sum, count) => sum + count, 0);
     await tx.execute(
       `UPDATE import_batches SET status = $2, completed_at = now(), counts = $3::jsonb,
         error_summary = $4 WHERE id = $1`,
@@ -390,6 +404,21 @@ async function getOrCreateQuarantineOwner(tx: Queryable, namespace: string): Pro
 
 export async function importLegacyPostgres(db: PostgresDatabase, apply: boolean): Promise<LegacyImportSummary> {
   const label = 'legacy-postgres:public';
+  const countRows = await db.query<{ entity: string; count: string }>(`
+    SELECT 'users' AS entity, count(*)::text AS count FROM users
+    UNION ALL SELECT 'players', count(*)::text FROM players
+    UNION ALL SELECT 'tournaments', count(*)::text FROM tournaments
+    UNION ALL SELECT 'matches', count(*)::text FROM matches
+  `);
+  const counts = Object.fromEntries(countRows.map(row => [row.entity, Number(row.count)]));
+  const sourceRowCount = Object.values(counts).reduce((sum, count) => sum + count, 0);
+  if (sourceRowCount > MAX_POSTGRES_IMPORT_RECORDS_PER_BATCH) {
+    return {
+      source: 'legacy_postgres', sourceLabel: label, dryRun: !apply, counts,
+      quarantined: 0, needsReview: 0, noOp: apply,
+      warnings: ['source_requires_checkpointed_import_before_apply'],
+    };
+  }
   const [users, players, tournaments, matches] = await Promise.all([
     db.query<LegacyUser>('SELECT id, username FROM users ORDER BY id'),
     db.query<LegacyPlayer>(`SELECT id, user_id, guest_session_id, name, games_played, wins, losses, draws,
@@ -397,7 +426,6 @@ export async function importLegacyPostgres(db: PostgresDatabase, apply: boolean)
     db.query<LegacyTournament>('SELECT id, user_id, guest_session_id FROM tournaments ORDER BY id'),
     db.query<LegacyMatch>('SELECT id, tournament_id, user_id, guest_session_id, teams, start_time, end_time FROM matches ORDER BY id'),
   ]);
-  const counts = { users: users.length, players: players.length, tournaments: tournaments.length, matches: matches.length };
   const batchHash = digest(JSON.stringify({
     users: users.map(row => hashRecord(row).toString('hex')),
     players: players.map(row => hashRecord(row).toString('hex')),

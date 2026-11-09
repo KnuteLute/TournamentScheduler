@@ -54,6 +54,11 @@ Import writes occur in a database transaction and preserve legacy columns and
 JSON. Review database backups, source hashes, collision reports, and unresolved
 quarantine before any separately approved account-claim or cutover operation.
 This CLI does not claim that migration or import has been production-applied.
+Each apply batch is bounded: local JSON is capped at 10,000 records / 50 MiB,
+and the PostgreSQL backfill refuses a source over 1,000 total legacy rows rather
+than opening an unbounded transaction. Larger PostgreSQL sources require an
+operator-reviewed, checkpointed bulk-import procedure before application; the
+CLI reports the refusal and performs no writes.
 
 ## Local JSON safety boundary
 

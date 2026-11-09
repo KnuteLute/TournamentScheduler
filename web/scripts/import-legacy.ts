@@ -40,6 +40,7 @@ function parseArgs(args: string[]): Options {
     const webDirectory = path.basename(cwd) === 'web' ? cwd : path.join(cwd, 'web');
     files.push(path.join(webDirectory, '.local-data/offline-db.json'));
   }
+  if (files.length > 100) throw new Error('At most 100 local source files may be processed per invocation');
   if (source === 'postgres' && files.length > 0 && args.includes('--file')) throw new Error('--file is only valid for local-json sources');
   return { source, files, apply, reconcile };
 }
@@ -53,21 +54,27 @@ async function main(): Promise<void> {
       console.log(JSON.stringify({ mode: 'reconciliation', counts: await reconcileLegacyData(db!) }));
       return;
     }
-    const summary = options.source === 'postgres'
-      ? await importLegacyPostgres(db!, options.apply)
-      : await Promise.all(options.files.map(async file => {
+    let summary;
+    if (options.source === 'postgres') {
+      summary = await importLegacyPostgres(db!, options.apply);
+    } else {
+      const localSummaries = [];
+      for (const file of options.files) {
         const stat = await fs.stat(file);
         if (stat.size > MAX_LOCAL_IMPORT_BYTES) {
-          return {
+          localSummaries.push({
             source: 'local_json' as const,
             sourceLabel: path.basename(file).match(/^(offline-db|players_index|tournament_history|match_history)\.json$/)
               ? path.basename(file) : 'local-json-source',
             dryRun: !options.apply, counts: {}, quarantined: 0, needsReview: 1, noOp: false,
             warnings: ['source_exceeds_size_limit'],
-          };
+          });
+          continue;
         }
-        return inspectLocalJson(db, file, await fs.readFile(file), options.apply);
-      }));
+        localSummaries.push(await inspectLocalJson(db, file, await fs.readFile(file), options.apply));
+      }
+      summary = localSummaries;
+    }
     console.log(JSON.stringify(summary));
   } finally {
     if (db) await db.close();
