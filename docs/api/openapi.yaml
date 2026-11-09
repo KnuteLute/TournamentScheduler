@@ -12,6 +12,8 @@ servers:
   - url: /api/v1
     description: Same-origin API
 tags:
+  - name: Health
+    description: Non-sensitive service liveness and readiness probes.
   - name: Sessions
     description: Guest and authenticated session lifecycle.
   - name: Authentication
@@ -29,6 +31,83 @@ tags:
 security:
   - sessionCookie: []
 paths:
+  /health/live:
+    get:
+      tags: [Health]
+      operationId: getLiveness
+      summary: Check whether the API process is alive
+      description: |
+        Dependency-free liveness probe. It does not access PostgreSQL or expose
+        dependency state. This cheap endpoint is not rate-limited so frequent
+        orchestrator probes cannot be throttled; use readiness for dependency
+        health. A 503 is returned only while the process is deliberately draining
+        or otherwise unable to serve requests, not because a dependency is down.
+      security: []
+      responses:
+        '200':
+          description: The API process is alive.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: live }
+        '503':
+          description: The process is draining or unable to serve requests.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: unavailable }
+        default: { $ref: '#/components/responses/Problem' }
+  /health/ready:
+    get:
+      tags: [Health]
+      operationId: getReadiness
+      summary: Check whether the API is ready to serve requests
+      description: |
+        Performs a bounded, safe, read-only PostgreSQL readiness check. The
+        response reports only aggregate readiness and never includes database
+        identifiers, query text, credentials, errors, or timing details. This
+        endpoint is rate-limited to protect the database; a 429 is distinct from
+        readiness failure and includes Retry-After.
+      security: []
+      responses:
+        '200':
+          description: Required services are ready.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: ready }
+        '503':
+          description: The PostgreSQL readiness check failed or a required service is unavailable; no internal details are returned.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: not_ready }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
   /sessions:
     post:
       tags: [Sessions]
@@ -95,6 +174,33 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /session/claim:
+    get:
+      tags: [Sessions]
+      operationId: getGuestClaimStatus
+      summary: Get the current session's pending guest-claim conflicts
+      description: |
+        Requires the authenticated session to have a server-bound pending guest
+        owner claim. Returns only unresolved name-conflict summaries for that
+        claim: the guest entity kind, opaque guest resource ID, its display name,
+        and the colliding display names in the authenticated owner's scope. It
+        does not accept an owner or guest ID and never returns unrelated owner,
+        account, player, team, or tournament data. The strong ETag is the current
+        session ETag and is also returned by GET /session; use the latest value
+        with POST /session/claim after resolving conflicts. Response is no-store.
+      responses:
+        '200':
+          description: Safe conflict summary for the guest claim bound to this session.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuestClaimStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
     post:
       tags: [Sessions]
       operationId: claimGuestData
@@ -103,10 +209,13 @@ paths:
         Available only after login/registration with a validated guest session.
         The pending guest owner is bound server-side to the authenticated session;
         the request cannot select a guest or account owner. If canonical-name
-        collisions prevented automatic transfer at authentication, rename the
-        specified guest players/teams in this atomic claim. IDs and historical
-        snapshots are preserved; this operation never silently merges records by
-        name. A conflict or failed transaction changes nothing.
+        collisions prevented automatic transfer at authentication, resolve every
+        conflict shown by GET /session/claim with an explicit unique new name in
+        `renames`. IDs and historical snapshots are preserved; this operation
+        never silently merges records by name. Use the latest session ETag from
+        GET /session/claim or GET /session in If-Match. Require X-CSRF-Token and
+        same-origin/Origin validation. A conflict or failed transaction changes
+        nothing.
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
         - $ref: '#/components/parameters/IfMatch'
@@ -134,6 +243,7 @@ paths:
               schema: { $ref: '#/components/schemas/TransferSummary' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CsrfRejected' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
@@ -535,7 +645,9 @@ paths:
         membership. It does not generate matches or mutate player statistics.
         For 1v1 and 2v2_rotating supply playerIds; for 2v2_fixed supply teamIds.
         Each mode requires distinct selected IDs and distinct canonical player
-        names; both 2v2 modes require at least four distinct roster players.
+        names; all rosters are limited to 32 distinct players. 1v1 requires at
+        least two players, rotating 2v2 at least four players, and fixed 2v2 uses
+        between two and 16 teams (at most 32 players).
         Selected fixed teams must form a disjoint partition: no player may be
         omitted or appear in more than one selected team. The server persists a
         seed and generator version for deterministic schedule replay.
@@ -582,7 +694,13 @@ paths:
       tags: [Tournaments]
       operationId: updateDraftTournament
       summary: Update a draft tournament
-      description: Only draft tournaments are editable. A started tournament's participant and mode snapshots are immutable.
+      description: |
+        Only draft tournaments are editable. A started tournament's participant
+        and mode snapshots are immutable. A name-only patch may omit mode and
+        roster. To replace a roster, include its mode and only the corresponding
+        playerIds (1v1/2v2_rotating) or teamIds (2v2_fixed); the server validates
+        the selected mode against the supplied roster and owned, disjoint team
+        membership.
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
         - $ref: '#/components/parameters/IfMatch'
@@ -1288,11 +1406,26 @@ components:
     GuestNameConflict:
       type: object
       additionalProperties: false
-      required: [resourceType, guestResourceId, guestName]
+      description: Minimal owner-authorized name-conflict summary; collisionNames contains names only, never IDs or data from an unrelated owner.
+      required: [entityKind, resourceId, displayName, collisionNames]
       properties:
-        resourceType: { type: string, enum: [player, team] }
-        guestResourceId: { $ref: '#/components/schemas/Id' }
-        guestName: { type: string }
+        entityKind: { type: string, enum: [player, team] }
+        resourceId: { $ref: '#/components/schemas/Id' }
+        displayName: { type: string }
+        collisionNames:
+          type: array
+          minItems: 1
+          items: { type: string }
+    GuestClaimStatus:
+      type: object
+      additionalProperties: false
+      required: [pending, conflicts]
+      properties:
+        pending: { type: boolean, const: true }
+        conflicts:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/GuestNameConflict' }
     GuestNameResolution:
       type: object
       additionalProperties: false
@@ -1383,6 +1516,7 @@ components:
             playerIds:
               type: array
               minItems: 2
+              maxItems: 32
               uniqueItems: true
               items: { $ref: '#/components/schemas/Id' }
         - type: object
@@ -1395,6 +1529,7 @@ components:
             teamIds:
               type: array
               minItems: 2
+              maxItems: 16
               uniqueItems: true
               items: { $ref: '#/components/schemas/Id' }
         - type: object
@@ -1407,24 +1542,52 @@ components:
             playerIds:
               type: array
               minItems: 4
+              maxItems: 32
               uniqueItems: true
               items: { $ref: '#/components/schemas/Id' }
     TournamentPatch:
-      type: object
-      additionalProperties: false
-      minProperties: 1
-      properties:
-        name: { type: string, minLength: 1, maxLength: 100 }
-        playerIds:
-          type: array
-          minItems: 2
-          uniqueItems: true
-          items: { $ref: '#/components/schemas/Id' }
-        teamIds:
-          type: array
-          minItems: 2
-          uniqueItems: true
-          items: { $ref: '#/components/schemas/Id' }
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [name]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 100 }
+        - type: object
+          additionalProperties: false
+          required: [mode, playerIds]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 100 }
+            mode: { type: string, const: 1v1 }
+            playerIds:
+              type: array
+              minItems: 2
+              maxItems: 32
+              uniqueItems: true
+              items: { $ref: '#/components/schemas/Id' }
+        - type: object
+          additionalProperties: false
+          required: [mode, playerIds]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 100 }
+            mode: { type: string, const: 2v2_rotating }
+            playerIds:
+              type: array
+              minItems: 4
+              maxItems: 32
+              uniqueItems: true
+              items: { $ref: '#/components/schemas/Id' }
+        - type: object
+          additionalProperties: false
+          required: [mode, teamIds]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 100 }
+            mode: { type: string, const: 2v2_fixed }
+            teamIds:
+              type: array
+              minItems: 2
+              maxItems: 16
+              uniqueItems: true
+              items: { $ref: '#/components/schemas/Id' }
     Tournament:
       type: object
       additionalProperties: false
@@ -1436,9 +1599,11 @@ components:
         status: { $ref: '#/components/schemas/TournamentStatus' }
         participants:
           type: array
+          maxItems: 32
           items: { $ref: '#/components/schemas/TournamentParticipant' }
         pausedPlayerIds:
           type: array
+          maxItems: 32
           uniqueItems: true
           items: { $ref: '#/components/schemas/Id' }
         version: { type: integer, minimum: 1 }
@@ -1464,6 +1629,7 @@ components:
         kind: { type: string, enum: [player, team] }
         players:
           type: array
+          maxItems: 2
           items: { $ref: '#/components/schemas/PlayerSummary' }
     Schedule:
       type: object
