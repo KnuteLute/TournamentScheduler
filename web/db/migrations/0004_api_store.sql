@@ -25,7 +25,7 @@ ALTER TABLE match_sides
   ADD COLUMN fixed_team_name_snapshot TEXT,
   ADD CONSTRAINT match_sides_fixed_team_fk
     FOREIGN KEY (fixed_team_id, owner_id) REFERENCES teams(id, owner_id)
-    ON DELETE RESTRICT ON UPDATE NO ACTION DEFERRABLE INITIALLY DEFERRED;
+    ON DELETE RESTRICT ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
 CREATE INDEX tournaments_owner_status_idx ON tournaments (owner_id, status, created_at DESC);
 CREATE INDEX matches_status_idx ON matches (tournament_id, normalized_status, sequence_no);

@@ -78,6 +78,9 @@ export async function runPersistenceUnitTests(): Promise<void> {
     assert.ok(migrations.every(migration => /^[a-f0-9]{64}$/.test(migration.checksum)));
     assert.ok(migrations[2]!.sql.includes('CREATE TABLE rate_limit_buckets'));
     assert.ok(migrations.every(migration => !/CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS/i.test(migration.sql)));
+    const ownerTransferSql=`${migrations[1]!.sql}\n${migrations[3]!.sql}`;
+    assert.doesNotMatch(ownerTransferSql,/ON UPDATE NO ACTION/i);
+    assert.ok((ownerTransferSql.match(/ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED/g)??[]).length>=19);
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }

@@ -49,12 +49,12 @@ columns. It does not import data or make legacy guest cookies valid.
 `0003_rate_limit_buckets.sql` adds the cross-instance fixed-window counter store;
 it contains no raw network, account, or session identifiers. `0004_api_store.sql`
 adds API resource fields and links guest-claim sessions to fresh session rows.
-Composite owner foreign keys are deferred. Root-to-child relationships cascade
-owner changes along one dependency path while sibling composite references use
-deferred checks, allowing an atomic owner transfer to preserve IDs and snapshots
-across players, teams, enrollments, fixed entries, matches, sides, and match
-players. The claim updates all owning roots in one transaction and resolves all
-canonical-name collisions before those owner changes.
+All owner-bearing composite foreign keys are `ON UPDATE CASCADE DEFERRABLE
+INITIALLY DEFERRED`. The claim locks both owners, resolves all canonical-name
+collisions, then updates player, team, tournament, and match roots in dependency
+order within one transaction. Cascades preserve IDs and snapshots across team
+members, enrollments, fixed entries, schedule events, match sides, and match
+players; deferred team-entry triggers validate the final graph at commit.
 
 Run migrations as an explicit operator-controlled command, not during API
 startup, Vercel previews, or every serverless invocation. `POSTGRES_URL` is
