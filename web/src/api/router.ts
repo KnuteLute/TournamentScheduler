@@ -129,6 +129,32 @@ function publicRepresentation(value: unknown): unknown {
 	return result;
 }
 
+const SESSION_RESPONSE_FIELDS = ["kind", "account", "csrfToken", "expiresAt", "pendingGuestClaim"] as const;
+
+function publicSessionRepresentation(value: unknown): Record<string, unknown> {
+	const safeValue = publicRepresentation(value);
+	if (safeValue === null || typeof safeValue !== "object" || Array.isArray(safeValue)) return {};
+	const session: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+	for (const field of SESSION_RESPONSE_FIELDS) {
+		if (!(field in safeValue)) continue;
+		const fieldValue = (safeValue as Record<string, unknown>)[field];
+		if (field === "account") {
+			if (fieldValue === null) session.account = null;
+			else if (fieldValue !== null && typeof fieldValue === "object" &&
+				typeof (fieldValue as Record<string, unknown>).id === "string" &&
+				typeof (fieldValue as Record<string, unknown>).username === "string") {
+				session.account = {
+					id: (fieldValue as Record<string, string>).id,
+					username: (fieldValue as Record<string, string>).username,
+				};
+			}
+			continue;
+		}
+		session[field] = fieldValue;
+	}
+	return session;
+}
+
 function queryObject(req: Request): Record<string, unknown> {
 	const result: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(req.query)) result[key] = value;
@@ -525,7 +551,7 @@ export function createApiRouter(store: ApiStore, config: ApiConfig): Router {
 		res.set("Set-Cookie", sessionCookie(token, expiresAt));
 		res.set("Cache-Control", "no-store");
 		setETag(res, result);
-		const session = { ...((publicRepresentation(result.value) as Record<string, unknown> | null) ?? {}), kind: "guest", account: null, csrfToken, expiresAt: expiresAt.toISOString(), pendingGuestClaim: false };
+		const session = { ...publicSessionRepresentation(result.value), kind: "guest", account: null, csrfToken, expiresAt: expiresAt.toISOString(), pendingGuestClaim: false };
 		res.status(201).json(session);
 	}));
 
@@ -538,7 +564,7 @@ export function createApiRouter(store: ApiStore, config: ApiConfig): Router {
 		if (!constantTimeEqual(protectedHash(csrfToken, config), session.csrfTokenHash)) {
 			fail(401, "unauthorized", "Unauthorized", "The supplied session is invalid.");
 		}
-		res.json({ ...((publicRepresentation(result.value) as Record<string, unknown> | null) ?? {}), kind: session.kind, account: session.account, csrfToken, expiresAt: session.expiresAt.toISOString(), pendingGuestClaim: session.pendingGuestClaim });
+		res.json({ ...publicSessionRepresentation(result.value), kind: session.kind, account: session.account, csrfToken, expiresAt: session.expiresAt.toISOString(), pendingGuestClaim: session.pendingGuestClaim });
 	}));
 
 	router.get("/session/claim", asyncRoute(async (req, res) => {
@@ -624,10 +650,10 @@ export function createApiRouter(store: ApiStore, config: ApiConfig): Router {
 		res.set("Cache-Control", "no-store");
 		setETag(res, result);
 		const payload = (publicRepresentation(result.value) as Record<string, unknown> | null) ?? {};
-		const sessionValue = payload.session && typeof payload.session === "object" ? payload.session as Record<string, unknown> : {};
+		const sessionValue = publicSessionRepresentation(payload.session);
 		res.status(kind === "register" ? 201 : 200).json({
-			...payload,
 			session: { ...sessionValue, kind: "authenticated", account: account ? { id: account.id, username: account.username } : sessionValue.account, csrfToken, expiresAt: expiresAt.toISOString() },
+			...(payload.transfer === undefined ? {} : { transfer: payload.transfer }),
 		});
 	});
 	router.post("/auth/register", auth("register"));
