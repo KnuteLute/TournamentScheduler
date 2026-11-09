@@ -189,17 +189,8 @@ describe("Legacy HTTP method regression", () => {
   });
 });
 
-describe("Database and deployment security regressions awaiting real adapters", () => {
-  test.todo("deployment injects rotated production secrets and verifies startup/log behavior in the target environment");
-  test.todo("complete PostgreSQL owner-isolation matrix covers every read/write, history, and derived-stat path");
-  test.todo("guest transfer preserves owner isolation, collision policy, and retry safety in PostgreSQL");
-  test.todo("login/claim rotation plus multi-row transaction and idempotency replay/conflict behavior are verified in persistence");
-  test.todo("bounded runtime validators reject oversized, malformed, out-of-range, and hostile inputs without partial writes");
-  test.todo("hostile SQL-looking names remain literal data and cannot change query meaning or access foreign rows");
-  test.todo("persistent rate-limit buckets are atomic across instances and production proxy topology is verified");
-  test.todo("interleaved sessions and separate app instances retain isolated tournament state");
-  test.todo("legacy importer security review remains pending; not a release gate in this focused review");
-  test.todo("captured application/proxy logs and errors redact passwords, tokens, cookies, and capabilities");
-  test.todo("production runtime verifies secret provisioning, HTTPS cookies, TLS, and trusted proxy configuration");
-  test.todo("offline mode is restricted to its approved single-user scope and cannot be selected in production");
+describe("Deferred operator security checks", () => {
+  test.todo("operator verifies production secret provisioning/rotation and fail-closed startup");
+  test.todo("operator verifies deployed TLS/HSTS/cookie delivery and API_TRUSTED_PROXY_HOPS");
+  test.todo("captured application/platform logs confirm credentials and capabilities are redacted");
 });
