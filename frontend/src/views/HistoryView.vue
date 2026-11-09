@@ -4,16 +4,30 @@ import { RouterLink } from 'vue-router'
 import { api } from '@/api/client'
 import type { Standings, StandingsView, Tournament } from '@/api/types'
 import { errorMessage, friendlyMode, friendlyStatus } from '@/lib/errors'
+import { standingRowKey } from '@/lib/standing-row-key'
 
 const tournaments = ref<Tournament[]>([])
 const standings = ref<Standings | null>(null)
 const view = ref<StandingsView>('players')
 const loading = ref(true)
+const standingsLoading = ref(false)
 const error = ref('')
+let standingsRequestGeneration = 0
+
 async function updateStandings(next: StandingsView) {
+  const generation = ++standingsRequestGeneration
   view.value = next
-  try { standings.value = (await api.standings(next)).data }
-  catch (cause) { error.value = errorMessage(cause) }
+  standings.value = null
+  standingsLoading.value = true
+  error.value = ''
+  try {
+    const result = await api.standings(next)
+    if (generation === standingsRequestGeneration) standings.value = result.data
+  } catch (cause) {
+    if (generation === standingsRequestGeneration) error.value = errorMessage(cause)
+  } finally {
+    if (generation === standingsRequestGeneration) standingsLoading.value = false
+  }
 }
 onMounted(async () => {
   try {
@@ -79,7 +93,14 @@ onMounted(async () => {
         </div>
       </div>
       <div
-        v-if="standings?.rows.length"
+        v-if="standingsLoading"
+        class="loading-state"
+        role="status"
+      >
+        Oppdaterer tabell …
+      </div>
+      <div
+        v-else-if="standings?.rows.length"
         class="table-wrap"
       >
         <table>
@@ -106,7 +127,7 @@ onMounted(async () => {
           </thead><tbody>
             <tr
               v-for="row in standings.rows"
-              :key="`${row.subjectType}:${row.playerIds.join(':')}`"
+              :key="standingRowKey(row)"
             >
               <td>
                 <span
