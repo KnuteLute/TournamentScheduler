@@ -4,6 +4,54 @@
  */
 
 export interface paths {
+    "/health/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Check whether the API process is alive
+         * @description Dependency-free liveness probe. It does not access PostgreSQL or expose
+         *     dependency state. This cheap endpoint is not rate-limited so frequent
+         *     orchestrator probes cannot be throttled; use readiness for dependency
+         *     health. A 503 is returned only while the process is deliberately draining
+         *     or otherwise unable to serve requests, not because a dependency is down.
+         */
+        get: operations["getLiveness"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/health/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Check whether the API is ready to serve requests
+         * @description Performs a bounded, safe, read-only PostgreSQL readiness check. The
+         *     response reports only aggregate readiness and never includes database
+         *     identifiers, query text, credentials, errors, or timing details. This
+         *     endpoint is rate-limited to protect the database; a 429 is distinct from
+         *     readiness failure and includes Retry-After.
+         */
+        get: operations["getReadiness"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sessions": {
         parameters: {
             query?: never;
@@ -1071,6 +1119,83 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getLiveness: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The API process is alive. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        status: "live";
+                    };
+                };
+            };
+            /** @description The process is draining or unable to serve requests. */
+            503: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        status: "unavailable";
+                    };
+                };
+            };
+            default: components["responses"]["Problem"];
+        };
+    };
+    getReadiness: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Required services are ready. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        status: "ready";
+                    };
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description The PostgreSQL readiness check failed or a required service is unavailable; no internal details are returned. */
+            503: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        status: "not_ready";
+                    };
+                };
+            };
+            default: components["responses"]["Problem"];
+        };
+    };
     createGuestSession: {
         parameters: {
             query?: never;

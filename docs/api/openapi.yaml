@@ -12,6 +12,8 @@ servers:
   - url: /api/v1
     description: Same-origin API
 tags:
+  - name: Health
+    description: Non-sensitive service liveness and readiness probes.
   - name: Sessions
     description: Guest and authenticated session lifecycle.
   - name: Authentication
@@ -29,6 +31,83 @@ tags:
 security:
   - sessionCookie: []
 paths:
+  /health/live:
+    get:
+      tags: [Health]
+      operationId: getLiveness
+      summary: Check whether the API process is alive
+      description: |
+        Dependency-free liveness probe. It does not access PostgreSQL or expose
+        dependency state. This cheap endpoint is not rate-limited so frequent
+        orchestrator probes cannot be throttled; use readiness for dependency
+        health. A 503 is returned only while the process is deliberately draining
+        or otherwise unable to serve requests, not because a dependency is down.
+      security: []
+      responses:
+        '200':
+          description: The API process is alive.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: live }
+        '503':
+          description: The process is draining or unable to serve requests.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: unavailable }
+        default: { $ref: '#/components/responses/Problem' }
+  /health/ready:
+    get:
+      tags: [Health]
+      operationId: getReadiness
+      summary: Check whether the API is ready to serve requests
+      description: |
+        Performs a bounded, safe, read-only PostgreSQL readiness check. The
+        response reports only aggregate readiness and never includes database
+        identifiers, query text, credentials, errors, or timing details. This
+        endpoint is rate-limited to protect the database; a 429 is distinct from
+        readiness failure and includes Retry-After.
+      security: []
+      responses:
+        '200':
+          description: Required services are ready.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: ready }
+        '503':
+          description: The PostgreSQL readiness check failed or a required service is unavailable; no internal details are returned.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: not_ready }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        default: { $ref: '#/components/responses/Problem' }
   /sessions:
     post:
       tags: [Sessions]

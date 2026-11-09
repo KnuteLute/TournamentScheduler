@@ -2,6 +2,12 @@
 
 `openapi.yaml` is the contract for the Vue client and backend JSON API at `/api/v1`. It complements the merged domain contract in `docs/domain/scheduling-and-standings.md` and PostgreSQL model in `docs/database/schema.md`. PostgreSQL is the durable source of truth. The backend validates ownership, IDs, roster relationships, scores, schedules, standings, and lifecycle transitions; no decision is trusted merely because the Vue UI sent it.
 
+## Health probes
+
+- `GET /api/v1/health/live` is a cheap, unauthenticated process-liveness probe with no database dependency and no rate limit. It returns only `{"status":"live"}` with `200`; `503`/`{"status":"unavailable"}` is reserved for draining or a process unable to serve requests. A dependency outage alone must not fail liveness.
+- `GET /api/v1/health/ready` is an unauthenticated, bounded, safe read-only PostgreSQL readiness check. It returns only `{"status":"ready"}` with `200` or `{"status":"not_ready"}` with `503`; it is rate-limited to protect the database and returns `429` with `Retry-After` when throttled. Do not include database IDs, query text, errors, credentials, or timing details in either health response.
+- These are the exact health paths under `/api/v1`; the former `/health` route is not part of the API contract.
+
 ## Ownership, sessions, and guest transfer
 
 - Every account/guest has a stable data-owner boundary. Every player, reusable team, tournament, enrollment/team-entry snapshot, match, and idempotency record is owner-scoped (a match inherits its owner through its tournament). Derive the owner only from the verified server-side session and owner record. Never accept `ownerId`, `accountId`, guest IDs, or session IDs from request bodies, query strings, or client-selected resource IDs.
