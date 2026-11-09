@@ -8,15 +8,10 @@ import {
   Participant,
   TournamentMode,
 } from './types';
+import { canonicalizeName } from './names';
 
 export function normalizeDisplayName(value: string): string {
-  return value.normalize('NFKC')
-    .trim()
-    .replace(/\s+/gu, ' ')
-    .toLowerCase()
-    .replace(/\u00df/gu, 'ss')
-    .replace(/\u03c2/gu, '\u03c3')
-    .replace(/\u0345/gu, '\u03b9');
+  return canonicalizeName(value);
 }
 
 export function isValidInstant(value: string): boolean {

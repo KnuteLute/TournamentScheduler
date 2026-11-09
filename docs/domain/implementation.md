@@ -52,6 +52,16 @@ the documented status transitions. Callers must persist each state/result
 change atomically and perform optimistic-concurrency checks in the service or
 repository layer.
 
+Participant-name validation uses `canonicalizeName` and
+`NAME_CANONICALIZATION_VERSION` from `web/src/domain/names.ts`. Its function
+body and version are byte-identical to `web/src/persistence/names.ts`
+(`nfkc-casefold-whitespace-v1`), including NFKC, sentinel preservation of
+dotless-i, upper-then-lower conversion, sharp-s expansion, Unicode
+`White_Space` collapsing, and trimming. The domain worktree does not contain
+the persistence source, so no direct cross-layer import test is possible here;
+`names.test.ts` instead provides a shared edge-case corpus for both layers to
+keep aligned after integration.
+
 Availability changes exclude paused players only from future rotating
 generation. They do not rewrite an assigned match. Pausing an active player
 in the current in-progress match pauses that match with a

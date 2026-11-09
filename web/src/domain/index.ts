@@ -1,4 +1,5 @@
 export * from './lifecycle';
+export * from './names';
 export * from './random';
 export * from './schedule';
 export * from './standings';
