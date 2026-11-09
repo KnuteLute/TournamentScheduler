@@ -1,69 +1,87 @@
 # Testing the Tournament Scheduler v2 API and browser journeys
 
-These tests target the frozen API in `docs/api/openapi.yaml` and the domain behavior in `docs/domain/scheduling-and-standings.md`. They are deliberately independent of implementation internals: REST requests are made through Supertest and state is persisted/read through the API backed by PostgreSQL. Playwright exercises the browser UI with separate browser contexts for guest owners.
+The root workspace now contains the API, Vue application, and test tooling. The integration suite exercises the HTTP API through Supertest against a locally running server configured with PostgreSQL; Playwright exercises the built SPA at the same origin. The test target is the contract in `docs/api/openapi.yaml` and the domain rules in `docs/domain/scheduling-and-standings.md`.
 
-## Current integration dependencies
+## Available workspace tooling
 
-The quality worktree currently has no `/api/v1` router, no `frontend/` application, no `web/db/migrations/`, no HTTP server export for the target API, and no integration/browser test scripts. The only server is the legacy EJS `web/src/app.ts`; the API/database/browser tests cannot pass against it. The root manifest currently contains Jest and ts-jest only, and `web/package.json` still has a placeholder test script.
+Run commands from the repository root. The root workspace requires Node `>=22.12.0`; `npm ci` installs the locked workspaces (`web`, `frontend`, and `packages/contracts`). Root test dependencies include Jest `^29.7.0` / ts-jest `^29.4.9`, Supertest `^7.1.1` / `@types/supertest` `^6.0.3`, PostgreSQL `pg` `^8.20.0` / `@types/pg` `^8.20.0`, and Playwright `@playwright/test` `^1.52.0`. The Playwright project is Chromium-only; install its browser where needed with `npx playwright install chromium` (CI may use its approved pinned browser image).
 
-The lead/platform owner needs to add and lock these root test dependencies (or explicitly approve equivalent versions/locations):
+Current root scripts:
 
-- `supertest` and `@types/supertest` for REST integration requests.
-- `pg` and `@types/pg` for disposable PostgreSQL identity/version verification. `pg` is currently a web-only dependency and is not declared at the repository root where the Jest suite runs.
-- `@playwright/test` for browser journeys; install the Chromium browser in CI with `npx playwright install --with-deps chromium` (or the platform-approved pinned image).
+| Command | Purpose |
+| --- | --- |
+| `npm run build` | Build contracts, web server, and Vue SPA; the frontend build targets `web/public/app`. |
+| `npm run typecheck` | Typecheck each workspace. |
+| `npm run test:unit` | Root Jest plus web and frontend unit suites. |
+| `npm run test:integration` | Run `jest.integration.config.js` in-band, including `tests/integration/**`. |
+| `npm run test:security` | Run the security regression suite. |
+| `npm run test:e2e` | Run `playwright.config.ts` against the loopback app origin. |
+| `npm test` | Run unit, integration, security, and E2E suites. |
+| `npm run lint` | Lint maintained web/API/domain/service, frontend, and contracts sources. |
+| `npm run contract:check` | Lint the OpenAPI contract. |
 
-Suggested root scripts, once the app launch/migration commands are established:
+In `web/package.json`, `npm run db:migrate --prefix web` is the migration-apply command; it invokes `ts-node scripts/migrate.ts --apply`. The server command is `npm start --prefix web`, which starts `dist/server.js`. Build before starting so the server and SPA assets are present.
 
-```json
-{
-  "test:integration": "jest --runInBand tests/integration",
-  "test:e2e": "playwright test --config=playwright.config.ts"
-}
+## Local test configuration and safe run order
+
+The app loads the repository-root `.env`. Create a local ignored `.env` for this run; do not copy production values or print the file. Configure the following names with disposable test values:
+
+- `NODE_ENV=test`, `DB_MODE=postgres`, and `PORT=4173` (optionally `HOST=127.0.0.1`; that is also the server default).
+- `POSTGRES_URL` must connect to a disposable, loopback PostgreSQL database. `TEST_DATABASE_NAME` must exactly match its database name, with a delimited `test`, `tests`, or `ci` marker. The integration preflight requires PostgreSQL 14 or newer.
+- `API_ORIGIN=http://127.0.0.1:4173` so same-origin checks match the browser/API origin.
+- `API_SESSION_HASH_SECRET` must be a test-only value of at least 32 bytes (hex or base64url). Never reuse a production or shared secret.
+- `API_TRUSTED_PROXY_HOPS=0` for this directly bound local server; do not set a trusted proxy hop for local tests.
+- `TEST_API_ORIGIN` and `E2E_BASE_URL` must both be the loopback origin `http://127.0.0.1:4173` (no path, credentials, query, or fragment).
+- `TEST_ACCOUNT_PASSWORD` is an injected synthetic test credential of at least 12 characters. It is read from the test environment and is not embedded in source.
+
+The integration and Playwright configs reject non-test mode, remote API/database hosts, and database names that do not match `TEST_DATABASE_NAME` and the test-name marker. Use a fresh database for each job/run. Tests create unique synthetic records and do not truncate tables or run cleanup SQL. Do not run these suites against a developer-shared, preview, or production database.
+
+After the PostgreSQL service and disposable database are provisioned, the intended sequence is:
+
+```sh
+npm ci
+npm run build
+npm run db:migrate --prefix web
+PORT=4173 npm start --prefix web
 ```
 
-The application workstream must provide a test-mode API server on a configurable loopback port and serve the frontend at that same origin. Do not bind test automation to the legacy EJS routes or add test-only production endpoints. The API server must read `POSTGRES_URL`, use the normal migration path, and fail closed for missing session secrets outside test mode.
+With that server running, execute in a separate terminal with the same test-only environment:
 
-## Safe local/CI setup
+```sh
+npm run test:integration
+npm run test:e2e
+```
 
-Use a unique disposable PostgreSQL database for every job/run. Apply the actual migrations before starting the API. Never use a developer shared database, preview/production URL, or production secret. The integration harness refuses to run unless all of these are true:
+The root `.env` supplies the server's `POSTGRES_URL`, `API_ORIGIN`, and session/proxy settings. `TEST_API_ORIGIN`, `E2E_BASE_URL`, `TEST_DATABASE_NAME`, and `TEST_ACCOUNT_PASSWORD` are test-runner settings and must point to/use the same disposable test setup. The SPA is served below `/app/`; Playwright uses the origin root and follows the server's redirect to `/app/`.
 
-- `NODE_ENV=test`.
-- `POSTGRES_URL` connects to the same database name set in `TEST_DATABASE_NAME`, and its host is loopback-only.
-- The database name contains a delimited `test`, `tests`, or `ci` marker, and PostgreSQL is version 14 or newer.
-- `TEST_API_ORIGIN` is a loopback URL (for example `http://127.0.0.1:4173`); remote hosts are rejected.
+## Persistence integration status and limits
 
-For browser tests set `E2E_BASE_URL` to the same loopback application. Inject `TEST_ACCOUNT_PASSWORD` (at least 12 characters) and the app's disposable test-only session secret from the runner environment; do not put values in source, shell transcripts, artifacts, or logs. Browser contexts are isolated, and test recording is disabled to avoid retaining cookies or personal data. Tests create unique synthetic records and assume the database is disposable; they do not truncate tables or run cleanup SQL.
+`web/src/app.ts` mounts `/api/v1` and serves the SPA; it delegates PostgreSQL operations to `./persistence/api-store`. That ApiStore PostgreSQL adapter is the critical integration boundary for these REST tests. The current checked-out tree does not contain `web/src/persistence/api-store.ts` (or an equivalent persistence implementation), `web/scripts/migrate.ts`, or a versioned migrations directory. Although the `db:migrate` script is declared above, its target and migration application are therefore not verified in this tree; do not substitute the legacy `web/scripts/init-db.ts` as the v2 migration path.
 
-The expected sequence after the lead adds the server/migration scripts is:
+Until the ApiStore and migration implementation are available and the PostgreSQL integration suite runs against them, the following remain unverified: schema bootstrap/application, session/owner persistence, player/team/tournament/match writes and reads, idempotency records, transaction rollback, ETag/concurrent-write behavior, account transfer, derived tournament/overall standings, and restart-safe isolation. The API router tests use mocked `ApiStore` implementations and are not evidence of PostgreSQL integration. The REST tests in this workstream also cannot pass against the current app until that adapter is present and wired.
 
-1. Create a fresh database such as `tournament_quality_test_<run-id>` and set matching `TEST_DATABASE_NAME` / `POSTGRES_URL` values.
-2. Run the normal migration command against that database.
-3. Start the API + frontend in test mode bound to `127.0.0.1` with a synthetic test-only secret.
-4. Run `npm run test:integration` with `TEST_API_ORIGIN` set.
-5. Run `npm run test:e2e` with `E2E_BASE_URL` set.
-6. Stop the service and discard the entire disposable database using the CI service lifecycle, never a production or shared database command.
+Do not report integration or E2E checks as passing unless they have been run against the disposable PostgreSQL service and running app. Keep browser recordings disabled; the Playwright config disables traces, screenshots, and video to avoid retaining session material or synthetic account details.
 
-The exact migration, server-start, and test-secret environment variable names remain integration dependencies because those commands/configuration are lead/backend-owned and do not yet exist in this worktree.
+## REST integration coverage
 
-## API coverage
+`tests/integration/rest-api.integration.test.ts` currently covers guest session bootstrap/cookie properties, CSRF rejection and no-side-effect behavior, validation and canonical-name uniqueness, player and team ownership, ETags, fixed-team tournament snapshots, schedule and match reads, start/pause/resume/score/skip transitions, standings/history scope, idempotency replay and payload conflicts, concurrent mutations, guest-to-account transfer/claim conflicts, and simultaneous guest tournaments.
 
-`tests/integration/rest-api.integration.test.ts` covers:
+`tests/helpers/api-client.ts` checks that `POSTGRES_URL` is a loopback connection to the named disposable test database and verifies PostgreSQL version before the suite proceeds. API requests use the loopback `TEST_API_ORIGIN`; session cookie values are kept in test memory only and are not logged.
 
-- Missing session, guest bootstrap cookie properties, CSRF rejection, and no mutation after rejection.
-- Server-side owner isolation for player, team, tournament, and overall-history reads; foreign resources are expected to look absent (`404`).
-- Strict body/query validation, normalized-name uniqueness, player ETags (`428` missing / `412` stale), and team roster ownership/uniqueness.
-- Idempotent concurrent player creation and changed-payload conflict for a reused key.
-- Tournament start, persisted schedule/matches, match start/pause/resume/score, skip behavior, computed tournament and overall standings, and exclusion of skipped matches.
-- Concurrent state transitions and score retries, guest-to-account transfer/claim collision handling, and independent simultaneous guest tournaments.
+## Browser journeys and verified frontend selectors
 
-The suite deliberately verifies API-visible outcomes, not repository table names or implementation SQL. PostgreSQL is verified by an isolated connection check; the application under test must use the same `POSTGRES_URL`.
+The current Vue source does **not** define `data-testid` or `data-status` attributes. Browser tests use the accessible roles/names and existing DOM class hooks visible in `frontend/src/App.vue` and `frontend/src/views/*.vue`; they do not depend on invented test IDs.
 
-## Browser journeys and selector contract
+Selectors used by `tests/helpers/browser.ts` and `tests/e2e/critical-journeys.spec.ts` were checked against the current frontend:
 
-The Playwright tests use Norwegian-default UI text and stable `data-testid` selectors so labels can evolve without relying on CSS or translated copy. The frontend integration must expose these selectors (including the actions represented by them):
+| Journey element | Current selector / accessible name |
+| --- | --- |
+| App shell and language | `nav[aria-label="Hovedmeny"]`, `html[lang="nb"]`; Norwegian copy is present in the page body. |
+| Player management | Link `Spillere og lag`; label `Navn på ny spiller`; button `Legg til`; `.person-row`. |
+| Tournament setup | Link `Oversikt`; link text `Opprett turnering` or `Lag din første turnering`; label `Turneringsnavn`; role `radio` named `2 mot 2 · roterende lag`; player checkbox labels are their player names; button `Opprett kladd`. The rotating option is first in the current `modes` array and selected by default. |
+| Tournament detail and controls | Heading is the tournament name; start button `Start turneringen`; pause/resume buttons `Ⅱ Pause turnering` / `Fortsett turnering`; status `.hero-status .status-pill` uses `Pågår`, `Satt på pause`, or `Ferdig`. |
+| Match controls and score | Match cards `.match-card`; start `Start kamp`; pause/resume `Ⅱ Pause` / `Fortsett kamp`; score fields `.score-form input[type=number]`; save `Lagre resultat`; skip `Hopp over`; match status `.match-card .status-pill` includes `Pause`, `Ferdig`, or `Hoppet over`. |
+| Standings/history | `.standings-card tbody tr`; nav link `Historikk`; history entries `.history-item`. |
+| Guest-to-account transfer | Link `Logg inn`; auth switch button `Ny her? Opprett konto`; labels `Brukernavn` and `Passord`; submit button `Opprett konto`; signed-in username `.account-label`. |
 
-`app-shell`, `player-name-input`, `add-player-button`, `player-row`, `new-tournament-button`, `tournament-name-input`, `mode-option` (with `data-mode`), `mode-2v2_rotating`, `tournament-player-option`, `create-tournament-button`, `tournament-detail`, `start-tournament-button`, `tournament-status`, `tournament-pause-button`, `tournament-resume-button`, `match-start-button`, `match-pause-button`, `match-status`, `match-resume-button`, `score-side-1-input`, `score-side-2-input`, `submit-score-button`, `skip-next-match-button`, `latest-match-status`, `finish-tournament-button`, `nav-standings`, `standings-player-row`, `nav-history`, `history-tournament-row`, `register-link`, `username-input`, `password-input`, `register-submit`, `account-menu`, `transfer-status`, and `tournament-row`.
-
-Status markers expose machine values via `data-status` (`draft`, `active`, `paused`, `completed`, or `skipped`). The browser helper also asserts a Norwegian `no`/`nb` document language and visible Norwegian tournament/player/match text; the mode chooser's first option must be `2v2_rotating`.
-
-The current frontend is not present in this worktree. The Vue/frontend owner should align accessible controls and test IDs with this list or coordinate a contract update before quality checks are wired as required CI gates.
+The browser suite covers a guest tournament with pause/score/skip and standings/history, preservation of a guest player through registration, and isolation across two independent guest browser contexts. These selectors reflect the currently read Vue templates; if the frontend changes its accessible copy or structure, update the tests to match the reviewed UI rather than introducing selectors that are not present.

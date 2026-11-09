@@ -8,42 +8,38 @@ export function syntheticLabel(prefix: string): string {
 
 export async function openGuestApp(page: Page): Promise<void> {
   await page.goto("/");
-  await expect(page.getByTestId("app-shell")).toBeVisible();
-  const language = await page.locator("html").getAttribute("lang");
-  expect(language).toMatch(/^(no|nb)(-|$)/i);
+  await expect(page.getByRole("navigation", { name: "Hovedmeny" })).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("lang", "nb");
   await expect(page.locator("body")).toContainText(/turnering|spillere|kamp/i);
 }
 
 export async function addPlayer(page: Page, name: string): Promise<void> {
-  await page.getByTestId("player-name-input").fill(name);
-  await page.getByTestId("add-player-button").click();
-  await expect(page.getByTestId("player-row").filter({ hasText: name })).toBeVisible();
+  await page.getByRole("link", { name: "Spillere og lag" }).click();
+  await page.getByLabel("Navn på ny spiller").fill(name);
+  await page.getByRole("button", { name: "Legg til" }).click();
+  await expect(page.locator(".person-row").filter({ hasText: name })).toBeVisible();
 }
 
-export async function createTournament(
-  page: Page,
-  name: string,
-  playerCount = 4,
-): Promise<void> {
-  await page.getByTestId("new-tournament-button").click();
-  await page.getByTestId("tournament-name-input").fill(name);
-  await expect(page.getByTestId("mode-option").first()).toHaveAttribute("data-mode", "2v2_rotating");
-  await page.getByTestId("mode-2v2_rotating").check();
-  const choices = page.getByTestId("tournament-player-option");
-  await expect(choices).toHaveCount(playerCount);
-  for (let index = 0; index < playerCount; index += 1) {
-    await choices.nth(index).check();
-  }
-  await page.getByTestId("create-tournament-button").click();
-  await expect(page.getByTestId("tournament-detail")).toBeVisible();
+export async function createTournament(page: Page, name: string, playerNames: string[]): Promise<void> {
+  await page.getByRole("link", { name: "Oversikt" }).click();
+  await page.getByRole("link", { name: /Opprett turnering|Lag din første turnering/ }).first().click();
+  await page.getByLabel("Turneringsnavn").fill(name);
+
+  const rotatingMode = page.getByRole("radio", { name: /2 mot 2 · roterende lag/ });
+  await expect(rotatingMode).toHaveAttribute("aria-checked", "true");
+  for (const playerName of playerNames) await page.getByLabel(playerName).check();
+
+  await page.getByRole("button", { name: /Opprett kladd/ }).click();
+  await expect(page.getByRole("heading", { name })).toBeVisible();
 }
 
 export async function registerSyntheticAccount(page: Page): Promise<string> {
   const username = `qa_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-  await page.getByTestId("register-link").click();
-  await page.getByTestId("username-input").fill(username);
-  await page.getByTestId("password-input").fill(syntheticPassword());
-  await page.getByTestId("register-submit").click();
-  await expect(page.getByTestId("account-menu")).toContainText(username);
+  await page.getByRole("link", { name: "Logg inn" }).click();
+  await page.getByRole("button", { name: "Ny her? Opprett konto" }).click();
+  await page.getByLabel("Brukernavn").fill(username);
+  await page.getByLabel("Passord").fill(syntheticPassword());
+  await page.getByRole("button", { name: "Opprett konto" }).click();
+  await expect(page.locator(".account-label")).toContainText(username);
   return username;
 }

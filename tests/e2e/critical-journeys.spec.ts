@@ -13,49 +13,49 @@ test("guest can run a Norwegian rotating tournament, pause/score/skip, and revie
   for (const name of names) await addPlayer(page, name);
 
   const tournamentName = syntheticLabel("Syntetisk turnering");
-  await createTournament(page, tournamentName, names.length);
-  await page.getByTestId("start-tournament-button").click();
-  await expect(page.getByTestId("tournament-status")).toHaveAttribute("data-status", "active");
+  await createTournament(page, tournamentName, names);
+  await page.getByRole("button", { name: "Start turneringen" }).click();
+  await expect(page.locator(".hero-status .status-pill")).toHaveText("Pågår");
 
-  await page.getByTestId("tournament-pause-button").click();
-  await expect(page.getByTestId("tournament-status")).toHaveAttribute("data-status", "paused");
-  await page.getByTestId("tournament-resume-button").click();
-  await expect(page.getByTestId("tournament-status")).toHaveAttribute("data-status", "active");
+  await page.getByRole("button", { name: /Pause turnering/ }).click();
+  await expect(page.locator(".hero-status .status-pill")).toHaveText("Satt på pause");
+  await page.getByRole("button", { name: "Fortsett turnering" }).click();
+  await expect(page.locator(".hero-status .status-pill")).toHaveText("Pågår");
 
-  await page.getByTestId("match-start-button").click();
-  await page.getByTestId("match-pause-button").click();
-  await expect(page.getByTestId("match-status")).toHaveAttribute("data-status", "paused");
-  await page.getByTestId("match-resume-button").click();
-  await page.getByTestId("score-side-1-input").fill("11");
-  await page.getByTestId("score-side-2-input").fill("8");
-  await page.getByTestId("submit-score-button").click();
-  await expect(page.getByTestId("match-status")).toHaveAttribute("data-status", "completed");
+  await page.getByRole("button", { name: "Start kamp" }).first().click();
+  await page.getByRole("button", { name: "Ⅱ Pause" }).click();
+  await expect(page.locator(".match-card .status-pill").first()).toHaveText("Pause");
+  await page.getByRole("button", { name: "Fortsett kamp" }).click();
+  const scoreInputs = page.locator(".score-form input[type=number]");
+  await scoreInputs.nth(0).fill("11");
+  await scoreInputs.nth(1).fill("8");
+  await page.getByRole("button", { name: "Lagre resultat" }).click();
+  await expect(page.locator(".match-card .status-pill").filter({ hasText: "Ferdig" })).toHaveCount(1);
 
-  await page.getByTestId("skip-next-match-button").click();
-  await expect(page.getByTestId("latest-match-status")).toHaveAttribute("data-status", "skipped");
-  await page.getByTestId("finish-tournament-button").click();
-  await expect(page.getByTestId("tournament-status")).toHaveAttribute("data-status", "completed");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Hopp over" }).last().click();
+  await expect(page.locator(".match-card .status-pill").last()).toHaveText("Hoppet over");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Avslutt" }).click();
+  await expect(page.locator(".hero-status .status-pill")).toHaveText("Ferdig");
 
-  await page.getByTestId("nav-standings").click();
-  await page.getByTestId("standings-player-row").first().waitFor({ state: "visible" });
-  await expect(page.getByTestId("standings-player-row")).toHaveCount(names.length);
-  for (const name of names) {
-    await expect(page.getByTestId("standings-player-row").filter({ hasText: name })).toBeVisible();
-  }
+  const standingsRows = page.locator(".standings-card tbody tr");
+  await expect(standingsRows).toHaveCount(names.length);
+  for (const name of names) await expect(standingsRows.filter({ hasText: name })).toBeVisible();
 
-  await page.getByTestId("nav-history").click();
-  await expect(page.getByTestId("history-tournament-row").filter({ hasText: tournamentName })).toBeVisible();
+  await page.getByRole("link", { name: "Historikk" }).click();
+  await expect(page.locator(".history-item").filter({ hasText: tournamentName })).toBeVisible();
 });
 
-test("guest data transfers to an account without losing player identity", async ({ page }) => {
+test("guest data transfers to an account without losing the player", async ({ page }) => {
   await openGuestApp(page);
   const playerName = syntheticLabel("Transfer player");
   await addPlayer(page, playerName);
 
   const username = await registerSyntheticAccount(page);
-  await expect(page.getByTestId("player-row").filter({ hasText: playerName })).toBeVisible();
-  await expect(page.getByTestId("account-menu")).toContainText(username);
-  await expect(page.getByTestId("transfer-status")).toHaveText(/overført|ingen data/i);
+  await page.getByRole("link", { name: "Spillere og lag" }).click();
+  await expect(page.locator(".person-row").filter({ hasText: playerName })).toBeVisible();
+  await expect(page.locator(".account-label")).toContainText(username);
 });
 
 test("two browser sessions do not share players, tournaments, or history", async ({ browser }) => {
@@ -72,17 +72,17 @@ test("two browser sessions do not share players, tournaments, or history", async
     for (const name of firstNames) await addPlayer(firstPage, name);
     for (const name of secondNames) await addPlayer(secondPage, name);
     const tournamentName = syntheticLabel("Første gjests turnering");
-    await createTournament(firstPage, tournamentName, firstNames.length);
+    await createTournament(firstPage, tournamentName, firstNames);
 
-    for (const name of secondNames) {
-      await expect(firstPage.getByTestId("player-row").filter({ hasText: name })).toHaveCount(0);
-    }
-    for (const name of firstNames) {
-      await expect(secondPage.getByTestId("player-row").filter({ hasText: name })).toHaveCount(0);
-    }
-    await expect(secondPage.getByTestId("tournament-row").filter({ hasText: tournamentName })).toHaveCount(0);
-    await expect(firstPage.getByTestId("history-tournament-row")).toHaveCount(0);
-    await expect(secondPage.getByTestId("history-tournament-row")).toHaveCount(0);
+    await firstPage.getByRole("link", { name: "Spillere og lag" }).click();
+    await secondPage.getByRole("link", { name: "Spillere og lag" }).click();
+    for (const name of secondNames) await expect(firstPage.locator(".person-row").filter({ hasText: name })).toHaveCount(0);
+    for (const name of firstNames) await expect(secondPage.locator(".person-row").filter({ hasText: name })).toHaveCount(0);
+
+    await secondPage.getByRole("link", { name: "Oversikt" }).click();
+    await expect(secondPage.getByRole("link", { name: new RegExp(tournamentName) })).toHaveCount(0);
+    await secondPage.getByRole("link", { name: "Historikk" }).click();
+    await expect(secondPage.locator(".history-item").filter({ hasText: tournamentName })).toHaveCount(0);
   } finally {
     await firstContext.close();
     await secondContext.close();
