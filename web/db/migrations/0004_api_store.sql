@@ -9,7 +9,8 @@ ALTER TABLE tournaments
 ALTER TABLE matches
   ADD COLUMN external_id TEXT,
   ADD COLUMN version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
-  ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  ADD COLUMN normalized_started_at TIMESTAMPTZ;
 UPDATE matches SET external_id = public_id::text WHERE external_id IS NULL;
 ALTER TABLE matches ALTER COLUMN external_id SET NOT NULL;
 CREATE UNIQUE INDEX matches_tournament_external_id_unique ON matches (tournament_id, external_id);

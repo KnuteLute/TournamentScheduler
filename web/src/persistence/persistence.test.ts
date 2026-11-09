@@ -41,23 +41,33 @@ export async function runPersistenceUnitTests(): Promise<void> {
     {participants:[{id:'1',name:'A'}],score:0},
     {participants:[{id:'2',name:'B'}],score:0},
   ]);
-  assert.deepStrictEqual(normalizeLegacyMatchResult('scheduled',null,initializedScores),{
-    status:'scheduled',scores:[null,null],winnerSide:null,completedAt:null,needsReview:false,warnings:[],
+  assert.deepStrictEqual(normalizeLegacyMatchResult('scheduled',null,null,initializedScores),{
+    status:'scheduled',startedAt:null,scores:[null,null],winnerSide:null,completedAt:null,needsReview:false,warnings:[],
   });
-  assert.deepStrictEqual(normalizeLegacyMatchResult('skipped',new Date('2029-01-01T00:00:00.000Z'),initializedScores),{
-    status:'skipped',scores:[null,null],winnerSide:null,completedAt:null,needsReview:false,warnings:[],
+  assert.deepStrictEqual(normalizeLegacyMatchResult('skipped',null,new Date('2029-01-01T00:00:00.000Z'),initializedScores),{
+    status:'skipped',startedAt:null,scores:[null,null],winnerSide:null,completedAt:null,needsReview:false,warnings:[],
   });
-  assert.deepStrictEqual(normalizeLegacyMatchResult('paused',new Date('2029-01-01T00:00:00.000Z'),initializedScores),{
-    status:'paused',scores:[null,null],winnerSide:null,completedAt:null,needsReview:false,warnings:[],
+  const legacyStart=new Date('2029-01-01T00:00:00.000Z');
+  assert.deepStrictEqual(normalizeLegacyMatchResult('scheduled',legacyStart,null,initializedScores),{
+    status:'in_progress',startedAt:legacyStart,scores:[null,null],winnerSide:null,completedAt:null,needsReview:true,warnings:['scheduled_match_has_start_time'],
+  });
+  const legacyPaused=normalizeLegacyMatchResult('paused',legacyStart,null,initializedScores);
+  assert.strictEqual(legacyPaused.status,'in_progress');
+  assert.strictEqual(legacyPaused.startedAt,legacyStart);
+  assert.deepStrictEqual(legacyPaused.scores,[null,null]);
+  assert.strictEqual(legacyPaused.needsReview,true);
+  assert.ok(legacyPaused.warnings.includes('legacy_paused_without_pause_interval'));
+  assert.deepStrictEqual(normalizeLegacyMatchResult('paused',null,null,initializedScores),{
+    status:'in_progress',startedAt:null,scores:[null,null],winnerSide:null,completedAt:null,needsReview:true,warnings:['legacy_paused_without_pause_interval'],
   });
   const completedScores=parseLegacySides([
     {participants:[{id:'1',name:'A'}],score:4},
     {participants:[{id:'2',name:'B'}],score:2},
   ]);
-  assert.deepStrictEqual(normalizeLegacyMatchResult('completed',new Date('2029-01-01T00:00:00.000Z'),completedScores),{
-    status:'completed',scores:[4,2],winnerSide:1,completedAt:new Date('2029-01-01T00:00:00.000Z'),needsReview:false,warnings:[],
+  assert.deepStrictEqual(normalizeLegacyMatchResult('completed',null,new Date('2029-01-01T00:00:00.000Z'),completedScores),{
+    status:'completed',startedAt:null,scores:[4,2],winnerSide:1,completedAt:new Date('2029-01-01T00:00:00.000Z'),needsReview:false,warnings:[],
   });
-  const missingCompletion=normalizeLegacyMatchResult('completed',null,completedScores);
+  const missingCompletion=normalizeLegacyMatchResult('completed',null,null,completedScores);
   assert.deepStrictEqual(missingCompletion.scores,[null,null]);
   assert.strictEqual(missingCompletion.status,'scheduled');
   assert.strictEqual(missingCompletion.needsReview,true);
@@ -65,10 +75,17 @@ export async function runPersistenceUnitTests(): Promise<void> {
     {participants:[{id:'1',name:'A'}],score:1_000_001},
     {participants:[{id:'2',name:'B'}],score:0},
   ]);
-  const invalidCompleted=normalizeLegacyMatchResult('completed',new Date('2029-01-01T00:00:00.000Z'),invalidScore);
+  const invalidCompleted=normalizeLegacyMatchResult('completed',null,new Date('2029-01-01T00:00:00.000Z'),invalidScore);
   assert.deepStrictEqual(invalidCompleted.scores,[null,null]);
   assert.strictEqual(invalidCompleted.winnerSide,null);
   assert.strictEqual(invalidCompleted.needsReview,true);
+  const corruptStart=normalizeLegacyMatchResult('completed','not-a-time',new Date('2029-01-01T00:05:00.000Z'),completedScores);
+  assert.strictEqual(corruptStart.status,'scheduled');
+  assert.strictEqual(corruptStart.startedAt,null);
+  assert.deepStrictEqual(corruptStart.scores,[null,null]);
+  assert.strictEqual(corruptStart.completedAt,null);
+  assert.strictEqual(corruptStart.needsReview,true);
+  assert.ok(corruptStart.warnings.includes('invalid_legacy_start_time'));
   assert.strictEqual(NAME_CANONICALIZATION_VERSION, 'nfkc-casefold-whitespace-v1');
 
   const createdAt=new Date('2029-01-01T00:00:00.000Z');

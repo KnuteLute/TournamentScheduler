@@ -132,7 +132,7 @@ interface MatchRow {
   normalized_status: DomainMatch['status'];
   winner_side: 1 | 2 | null;
   version: number;
-  start_time: Date | null;
+  normalized_started_at: Date | null;
   end_time: Date | null;
   completed_at: Date | null;
   created_at: Date;
@@ -1108,7 +1108,7 @@ export class PostgresApiStore implements ApiStore {
     }
     const matchRows=await tx.query<MatchRow>(
       `SELECT id,public_id::text,external_id,tournament_id,round,sequence_no,normalized_status,winner_side,version,
-        start_time,end_time,completed_at,created_at FROM matches WHERE tournament_id=$1 AND owner_id=$2
+        normalized_started_at,end_time,completed_at,created_at FROM matches WHERE tournament_id=$1 AND owner_id=$2
        ORDER BY sequence_no,id`,[row.id,ownerId],
     );
     const matches:DomainMatch[]=[];
@@ -1142,7 +1142,7 @@ export class PostgresApiStore implements ApiStore {
         sides:domainSides as [MatchSide,MatchSide],pauseIntervals:pauseRows.map(pause=>({
           pausedAt:dateText(pause.started_at)!,resumedAt:dateText(pause.ended_at),reason:pause.reason,
         })),version:Number(match.version),
-        ...(match.start_time?{startTime:dateText(match.start_time)!}:{}),
+        ...(match.normalized_started_at?{startTime:dateText(match.normalized_started_at)!}:{}),
         ...(match.completed_at?{endTime:dateText(match.completed_at)!}:{}),
       });
     }
@@ -1331,8 +1331,8 @@ export class PostgresApiStore implements ApiStore {
     if(storedId===undefined){
       const generated=await tx.query<{id:number}>(
         `INSERT INTO matches (public_id,external_id,tournament_id,owner_id,sequence_no,round,normalized_status,status,
-          winner_side,version,teams,mode,start_time,end_time,completed_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10::jsonb,$11,$12,$13,$13) RETURNING id`,
+          winner_side,version,teams,mode,start_time,normalized_started_at,end_time,completed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10::jsonb,$11,$12,$12,$13,$13) RETURNING id`,
         [randomUUID(),match.id,tournamentId,ownerId,match.sequence,match.round,match.status,this.winnerSide(match),match.version,
           JSON.stringify(sideJson),tournament.row.mode,match.startTime?new Date(match.startTime):null,match.endTime?new Date(match.endTime):null],
       );
@@ -1340,7 +1340,7 @@ export class PostgresApiStore implements ApiStore {
     }else{
       await tx.execute(
         `UPDATE matches SET round=$1,normalized_status=$2,status=$2,winner_side=$3,version=$4,teams=$5::jsonb,
-          start_time=$6,end_time=$7,completed_at=$7 WHERE id=$8 AND tournament_id=$9 AND owner_id=$10`,
+          start_time=$6,normalized_started_at=$6,end_time=$7,completed_at=$7 WHERE id=$8 AND tournament_id=$9 AND owner_id=$10`,
         [match.round,match.status,this.winnerSide(match),match.version,JSON.stringify(sideJson),
           match.startTime?new Date(match.startTime):null,match.endTime?new Date(match.endTime):null,storedId,tournamentId,ownerId],
       );

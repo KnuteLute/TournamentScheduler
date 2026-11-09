@@ -105,7 +105,13 @@ time) with a valid completion timestamp and two bounded integer scores becomes
 normalized `completed` data. Scheduled, in-progress, paused, and skipped matches
 get `NULL` normalized scores and no winner; the original legacy JSON and timing
 columns remain unchanged. A purported completion with malformed/missing score
-or completion time is marked `needs_review` and normalized as non-completed.
+or completion time is marked `needs_review` and normalized as non-completed. A
+valid legacy `start_time` is copied into `normalized_started_at`; scheduled rows
+with a start time are normalized to `in_progress`. Legacy paused rows lacking
+pause-interval history are likewise made resumable as `in_progress`, marked
+`needs_review`, and do not receive fabricated pause intervals. Invalid start
+timestamps are marked for review, not exposed as normalized start times, and
+cannot validate a completion result.
 
 Import writes occur in a database transaction and preserve legacy columns and
 JSON. Review database backups, source hashes, collision reports, and unresolved

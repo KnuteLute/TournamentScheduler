@@ -362,6 +362,7 @@ export interface ParsedLegacySides {
 
 export interface NormalizedLegacyMatchResult {
   status: 'scheduled' | 'in_progress' | 'paused' | 'completed' | 'skipped';
+  startedAt: Date | null;
   scores: [number | null, number | null];
   winnerSide: 1 | 2 | null;
   completedAt: Date | null;
@@ -414,6 +415,7 @@ function validLegacyInstant(value:Date|string|null):Date|null{
 /** Normalize historical scores only when the source provides a completed result. */
 export function normalizeLegacyMatchResult(
   legacyStatus:string|null,
+  startTime:Date|string|null,
   endTime:Date|string|null,
   parsed:ParsedLegacySides,
 ):NormalizedLegacyMatchResult{
@@ -423,6 +425,7 @@ export function normalizeLegacyMatchResult(
   const explicitInProgress=['in_progress','playing'].includes(status);
   const explicitScheduled=['scheduled','pending',''].includes(status);
   const completedStatus=['completed','complete','finished','done'].includes(status);
+  const validStart=validLegacyInstant(startTime);
   const validTime=validLegacyInstant(endTime);
   const sides=parsed.sides;
   const bothScores=sides!==null&&sides.length===2&&sides.every(side=>
@@ -430,19 +433,32 @@ export function normalizeLegacyMatchResult(
   const scoreValues=bothScores?[Number(sides![0]!.score),Number(sides![1]!.score)] as [number,number]:null;
   const hasCompletionEvidence=completedStatus||(!status&&endTime!==null);
   const warnings=parsed.warnings.slice();
-  if(explicitSkipped)return {status:'skipped',scores:[null,null],winnerSide:null,completedAt:null,needsReview:parsed.sides===null||warnings.length>0,warnings};
-  if(explicitPaused)return {status:'paused',scores:[null,null],winnerSide:null,completedAt:null,needsReview:parsed.sides===null||warnings.length>0,warnings};
-  if(explicitInProgress)return {status:'in_progress',scores:[null,null],winnerSide:null,completedAt:null,needsReview:parsed.sides===null||warnings.length>0,warnings};
-  if(explicitScheduled&&endTime===null&&warnings.length===0){
-    return {status:'scheduled',scores:[null,null],winnerSide:null,completedAt:null,needsReview:false,warnings:[]};
+  const invalidStart=startTime!==null&&validStart===null;
+  if(invalidStart)warnings.push('invalid_legacy_start_time');
+  if(explicitSkipped)return {status:'skipped',startedAt:validStart,scores:[null,null],winnerSide:null,completedAt:null,needsReview:parsed.sides===null||warnings.length>0,warnings};
+  if(explicitPaused){
+    warnings.push('legacy_paused_without_pause_interval');
+    return {status:'in_progress',startedAt:validStart,scores:[null,null],winnerSide:null,completedAt:null,needsReview:true,warnings:Array.from(new Set(warnings))};
   }
-  if(hasCompletionEvidence&&validTime&&scoreValues){
-    return {status:'completed',scores:scoreValues,winnerSide:scoreValues[0]===scoreValues[1]?null:scoreValues[0]>scoreValues[1]?1:2,
+  if(explicitInProgress)return {status:'in_progress',startedAt:validStart,scores:[null,null],winnerSide:null,completedAt:null,needsReview:parsed.sides===null||warnings.length>0,warnings};
+  if(validStart&&(explicitScheduled||!status)){
+    warnings.push(explicitScheduled?'scheduled_match_has_start_time':'legacy_status_missing_with_start_time');
+    return {status:'in_progress',startedAt:validStart,scores:[null,null],winnerSide:null,completedAt:null,needsReview:true,warnings:Array.from(new Set(warnings))};
+  }
+  const startAfterCompletion=validStart!==null&&validTime!==null&&validStart.getTime()>validTime.getTime();
+  if(hasCompletionEvidence&&validTime&&scoreValues&&!invalidStart&&!startAfterCompletion){
+    return {status:'completed',startedAt:validStart,scores:scoreValues,winnerSide:scoreValues[0]===scoreValues[1]?null:scoreValues[0]>scoreValues[1]?1:2,
       completedAt:validTime,needsReview:false,warnings:[]};
   }
   if(!completedStatus&&!explicitScheduled)warnings.push('unknown_legacy_match_status');
+  if(startAfterCompletion)warnings.push('match_start_after_completion');
+  if(validStart){
+    warnings.push('started_match_completion_unverifiable');
+    return {status:'in_progress',startedAt:validStart,scores:[null,null],winnerSide:null,completedAt:null,needsReview:true,
+      warnings:Array.from(new Set(warnings))};
+  }
   if(hasCompletionEvidence||endTime!==null||warnings.length>0)warnings.push('completed_match_result_unverifiable');
-  return {status:'scheduled',scores:[null,null],winnerSide:null,completedAt:null,needsReview:hasCompletionEvidence||endTime!==null||warnings.length>0,
+  return {status:'scheduled',startedAt:validStart,scores:[null,null],winnerSide:null,completedAt:null,needsReview:hasCompletionEvidence||endTime!==null||warnings.length>0,
     warnings:Array.from(new Set(warnings))};
 }
 
@@ -741,7 +757,7 @@ export async function importLegacyPostgres(
       const rowHash = hashRecord(row);
       const sourceState = await sourceRecordState(tx, 'legacy-postgres', 'matches', String(row.id), rowHash);
       const parsed = parseLegacySides(row.teams);
-      const normalized = normalizeLegacyMatchResult(row.status,row.end_time,parsed);
+      const normalized = normalizeLegacyMatchResult(row.status,row.start_time,row.end_time,parsed);
       const tournamentRows=row.tournament_id===null?[]:await tx.query<LegacyTournament & {owner_id:string|null}>(
         `SELECT id,user_id,guest_session_id,owner_id::text FROM tournaments WHERE id=$1`,[row.tournament_id],
       );
@@ -759,9 +775,9 @@ export async function importLegacyPostgres(
       if (canInherit && ownerId && !sourceState.changed && !sourceState.unresolved) {
         await tx.execute(
           `UPDATE matches SET owner_id=coalesce(owner_id,$1),import_batch_id=coalesce(import_batch_id,$2),
-             normalized_status=$3,winner_side=$4,completed_at=$5
-           WHERE id=$6 AND (owner_id IS NULL OR owner_id=$1)`,
-          [ownerId,batchId,normalized.status,normalized.winnerSide,normalized.completedAt,row.id],
+             normalized_status=$3,winner_side=$4,completed_at=$5,normalized_started_at=$6
+           WHERE id=$7 AND (owner_id IS NULL OR owner_id=$1)`,
+          [ownerId,batchId,normalized.status,normalized.winnerSide,normalized.completedAt,normalized.startedAt,row.id],
         );
       }
       if (!canInherit || sourceState.changed || sourceState.unresolved) {
