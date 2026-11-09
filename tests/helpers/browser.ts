@@ -27,7 +27,12 @@ export async function createTournament(page: Page, name: string, playerNames: st
 
   const rotatingMode = page.getByRole("radio", { name: /2 mot 2 · roterende lag/ });
   await expect(rotatingMode).toHaveAttribute("aria-checked", "true");
-  for (const playerName of playerNames) await page.getByLabel(playerName).check();
+  for (const playerName of playerNames) {
+    const option = page.locator(".select-player").filter({ hasText: playerName });
+    const checkbox = option.locator('input[type="checkbox"]');
+    await option.click();
+    await expect(checkbox).toBeChecked();
+  }
 
   await page.getByRole("button", { name: /Opprett kladd/ }).click();
   await expect(page.getByRole("heading", { name })).toBeVisible();

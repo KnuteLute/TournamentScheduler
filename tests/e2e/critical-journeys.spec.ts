@@ -23,7 +23,12 @@ test("guest can run a Norwegian rotating tournament, pause/score/skip, and revie
   await expect(page.locator(".hero-status .status-pill")).toHaveText("Pågår");
 
   await page.getByRole("button", { name: "Start kamp" }).first().click();
-  await page.getByRole("button", { name: "Ⅱ Pause" }).click();
+  const pauseResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === "POST" && /\/matches\/[^/]+\/pause$/.test(url.pathname);
+  });
+  await page.getByRole("button", { name: /^Ⅱ Pause$/ }).click();
+  expect((await pauseResponse).status()).toBe(200);
   await expect(page.locator(".match-card .status-pill").first()).toHaveText("Pause");
   await page.getByRole("button", { name: "Fortsett kamp" }).click();
   const scoreInputs = page.locator(".score-form input[type=number]");
@@ -32,9 +37,18 @@ test("guest can run a Norwegian rotating tournament, pause/score/skip, and revie
   await page.getByRole("button", { name: "Lagre resultat" }).click();
   await expect(page.locator(".match-card .status-pill").filter({ hasText: "Ferdig" })).toHaveCount(1);
 
+  const skipButton = page.getByRole("button", { name: "Hopp over", exact: true }).last();
+  const scheduledMatchCard = page.locator(".match-card").filter({ has: skipButton });
+  const skippedMatchSequence = await scheduledMatchCard.locator(".match-sequence").innerText();
+  const skipResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === "POST" && /\/matches\/[^/]+\/skip$/.test(url.pathname);
+  });
   page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "Hopp over" }).last().click();
-  await expect(page.locator(".match-card .status-pill").last()).toHaveText("Hoppet over");
+  await skipButton.click();
+  expect((await skipResponse).status()).toBe(200);
+  const skippedMatchCard = page.locator(".match-card").filter({ hasText: skippedMatchSequence });
+  await expect(skippedMatchCard.locator(".status-pill.status-match")).toHaveText("Hoppet over");
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Avslutt" }).click();
   await expect(page.locator(".hero-status .status-pill")).toHaveText("Ferdig");
@@ -43,7 +57,7 @@ test("guest can run a Norwegian rotating tournament, pause/score/skip, and revie
   await expect(standingsRows).toHaveCount(names.length);
   for (const name of names) await expect(standingsRows.filter({ hasText: name })).toBeVisible();
 
-  await page.getByRole("link", { name: "Historikk" }).click();
+  await page.getByRole("link", { name: "Historikk", exact: true }).click();
   await expect(page.locator(".history-item").filter({ hasText: tournamentName })).toBeVisible();
 });
 
@@ -81,7 +95,7 @@ test("two browser sessions do not share players, tournaments, or history", async
 
     await secondPage.getByRole("link", { name: "Oversikt" }).click();
     await expect(secondPage.getByRole("link", { name: new RegExp(tournamentName) })).toHaveCount(0);
-    await secondPage.getByRole("link", { name: "Historikk" }).click();
+    await secondPage.getByRole("link", { name: "Historikk", exact: true }).click();
     await expect(secondPage.locator(".history-item").filter({ hasText: tournamentName })).toHaveCount(0);
   } finally {
     await firstContext.close();

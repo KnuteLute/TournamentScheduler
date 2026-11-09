@@ -55,15 +55,17 @@ npm run test:e2e
 
 The root `.env` supplies the server's `POSTGRES_URL`, `API_ORIGIN`, and session/proxy settings. `TEST_API_ORIGIN`, `E2E_BASE_URL`, `POSTGRES_TEST_DATABASE_URL`, `RATE_LIMIT_TEST_DATABASE_URL`, `TEST_DATABASE_NAME`, and `TEST_ACCOUNT_PASSWORD` are test-runner settings and must point to/use the same disposable test setup. The SPA is served below `/app/`; Playwright uses the origin root and follows the server's redirect to `/app/`.
 
-## Persistence integration status and limits
+## Persistence integration status and verification
 
-`web/src/app.ts` mounts `/api/v1` and serves the SPA; it delegates PostgreSQL operations to `./persistence/api-store`. The PostgreSQL ApiStore, migration runner, and migrations `0001`–`0004` are present. `npm run db:migrate --prefix web` invokes `ts-node scripts/migrate.ts --apply`; the read-only status command reported versions 1–4 applied in the supplied test database. Do not substitute the legacy `web/scripts/init-db.ts` for this versioned migration path.
+`web/src/app.ts` mounts `/api/v1` and serves the SPA; PostgreSQL operations go through `web/src/persistence/api-store.ts`. The ApiStore, migration runner, and migrations `0001`–`0004` are present. `npm run db:migrate --prefix web` invokes `ts-node scripts/migrate.ts --apply`; the read-only status check reported versions 1–4 applied in the disposable test database. Do not substitute the legacy `web/scripts/init-db.ts` for this versioned migration path.
 
-**Latest local integration attempt:** the root Jest REST suite compiled and ran but all 11 tests failed during guest bootstrap: `POST /api/v1/sessions` returned `500 internal-error`. A direct isolated ApiStore `session.createGuest` call returned PostgreSQL SQLSTATE `42P08` (ambiguous parameter type). The standalone `web` ApiStore PostgreSQL script also failed with its sanitized failure message. The PostgreSQL rate-limit script failed as well; a concurrent probe observed all 20 attempts allowed at a configured maximum of 5 while the stored counter stopped at 5. These are backend/persistence defects for the owning team to resolve; the QA assertions have not been weakened.
+**Latest local verification against the live loopback app and disposable PostgreSQL database:**
 
-Because session bootstrap fails, the REST suite did not verify session/owner writes, player/team/tournament/match operations, idempotency, transaction rollback, ETag/concurrent-write behavior, account transfer, derived standings, or restart-safe isolation. The API router tests use mocked `ApiStore` implementations and are not evidence of successful PostgreSQL integration. Rerun the root `npm run test:integration` after the ApiStore/session audit insert and rate-limit admission behavior are corrected.
+- `npm run test:integration` passed: REST/Jest **11/11**, ApiStore PostgreSQL checks passed, and rate-limit PostgreSQL transaction/concurrency checks passed.
+- `npm run test:e2e` passed: Playwright **3/3** browser journeys (Norwegian guest tournament with pause/score/skip and standings/history, guest-to-account transfer, and two-context owner isolation).
+- `npm run lint` exited successfully with zero errors. It reports two existing `no-explicit-any` warnings in `web/src/domain/test-globals.d.ts`; no QA-owned test files warn.
 
-Do not report integration or E2E checks as passing unless they have been run against the disposable PostgreSQL service and running app. Keep browser recordings disabled; the Playwright config disables traces, screenshots, and video to avoid retaining session material or synthetic account details.
+The ApiStore PostgreSQL script emitted a `pg` deprecation warning about calling `client.query()` while that client is already executing a query; the check itself passed. Keep browser recordings disabled; the Playwright config disables traces, screenshots, and video to avoid retaining session material or synthetic account details. These results apply to the code and local test environment used for this run; rerun the suites after relevant API, persistence, or UI changes.
 
 ## REST integration coverage
 
