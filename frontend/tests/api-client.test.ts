@@ -6,6 +6,22 @@ function jsonResponse(data: unknown, status = 200, headers: HeadersInit = {}) {
 }
 
 describe('same-origin API client', () => {
+  it('invokes the native global fetch with its required global receiver', async () => {
+    const fetcher = vi.fn<typeof fetch>(function (this: unknown) {
+      expect(this).toBe(globalThis)
+      return Promise.resolve(jsonResponse({ kind: 'guest' }))
+    })
+    vi.stubGlobal('fetch', fetcher)
+
+    try {
+      const client = new ApiClient('/api/v1', fetcher)
+      await client.request('/session')
+      expect(fetcher).toHaveBeenCalledOnce()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('sends CSRF and a fresh idempotency key for creates without an If-Match', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ id: 'p-1', name: 'Ada' }, 201))
     const client = new ApiClient('/api/v1', fetcher, () => 'csrf-token-value')
