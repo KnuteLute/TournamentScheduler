@@ -114,8 +114,19 @@ describe("OpenAPI security contract", () => {
 
   test("bounds credentials, names, pagination, roster IDs, and scores in the schemas", () => {
     const schemas = contract.components.schemas;
-    expect(resolve(schemas.Credentials).properties.password).toMatchObject({ minLength: 12, maxLength: 128 });
-    expect(resolve(schemas.Credentials).properties.username).toMatchObject({ minLength: 3, maxLength: 64 });
+    const registration = requestSchema(contract.paths["/auth/register"].post);
+    const login = requestSchema(contract.paths["/auth/login"].post);
+    expect(contract.paths["/auth/register"].post.requestBody.content["application/json"].schema.$ref)
+      .toBe("#/components/schemas/RegisterCredentials");
+    expect(contract.paths["/auth/login"].post.requestBody.content["application/json"].schema.$ref)
+      .toBe("#/components/schemas/LoginCredentials");
+    expect(registration.properties.password).toMatchObject({ minLength: 12, maxLength: 72 });
+    expect(login.properties.password).toMatchObject({ minLength: 1, maxLength: 72 });
+    for (const credentialSchema of [registration, login]) {
+      expect(credentialSchema.properties.password.description).toMatch(/rejects passwords over 72 UTF-8 bytes/i);
+      expect(credentialSchema.properties.password.description).toMatch(/no truncation/i);
+      expect(credentialSchema.properties.username).toMatchObject({ minLength: 3, maxLength: 64 });
+    }
     expect(resolve(schemas.PlayerInput).properties.name).toMatchObject({ minLength: 1, maxLength: 80 });
     expect(resolve(schemas.Id)).toMatchObject({ minLength: 1, maxLength: 128 });
     expect(resolve(contract.components.parameters.Limit).schema).toMatchObject({ minimum: 1, maximum: 100 });
@@ -173,17 +184,15 @@ describe("Legacy HTTP method regression", () => {
   });
 });
 
-describe("Runtime security regressions awaiting the v2 application adapter", () => {
-  test.todo("production startup fails closed for missing, weak, or invalid required secrets");
-  test.todo("guest/session capability forgery and owner-ID tampering cannot cross owner boundaries");
+describe("Database and deployment security regressions awaiting real adapters", () => {
+  test.todo("production entrypoint fails closed and mounts the API router with validated secret configuration");
+  test.todo("database adapter prevents foreign and unowned resource IDs from crossing owner boundaries");
   test.todo("login/registration rotate capabilities and logout/expiry revoke them server-side");
-  test.todo("missing CSRF tokens, cross-origin origins, and cross-site metadata reject writes without state changes");
-  test.todo("unknown, malformed, duplicate, or foreign player/team IDs reject atomically at create and start");
+  test.todo("database adapter rejects syntactically valid but unowned roster IDs atomically at create and start");
   test.todo("bounded runtime validators reject oversized, malformed, out-of-range, and hostile inputs without partial writes");
   test.todo("hostile SQL-looking names remain literal data and cannot change query meaning or access foreign rows");
-  test.todo("login and expensive/write endpoint rate limits return safe retry responses without proxy-header bypass");
+  test.todo("persistent rate-limit buckets are atomic across app instances and production proxy configuration is verified");
   test.todo("interleaved sessions and separate app instances retain isolated tournament state");
-  test.todo("state-changing legacy GET routes are absent and every legacy GET is read-only");
   test.todo("captured logs and error responses contain no passwords, tokens, cookies, CSRF values, or guest capabilities");
   test.todo("offline mode is restricted to its approved single-user scope and cannot be selected in production");
 });
