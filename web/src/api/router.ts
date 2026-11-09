@@ -368,7 +368,10 @@ export function createApiRouter(store: ApiStore, config: ApiConfig): Router {
 			return;
 		}
 		if (MUTATING_METHODS.has(req.method) && hasBody) {
-			const mediaType = req.method === "PATCH" ? "application/merge-patch+json" : "application/json";
+			const isAvailabilityPatch = req.method === "PATCH" && /^\/tournaments\/[^/]+\/availability\/?$/.test(req.path);
+			const mediaType = req.method === "PATCH" && !isAvailabilityPatch
+				? "application/merge-patch+json"
+				: "application/json";
 			if (!req.is(mediaType)) {
 				next(new ApiProblem(415, "unsupported-media-type", "Unsupported Media Type", `Use ${mediaType}.`));
 				return;
