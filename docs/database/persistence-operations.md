@@ -81,6 +81,10 @@ migration runner has not been applied to production by this change.
 
 ## Legacy import and reconciliation
 
+Legacy import is an explicit operator tool only: the migration command, API
+startup, and deployment do not invoke it. `--apply` affects only the selected
+source/database and is never part of the fresh-empty-database default rollout.
+
 `web/scripts/import-legacy.ts` defaults to dry-run. It reports counts and safe
 warning codes, never credentials, source payloads, raw guest-session values,
 SQL errors, or connection URLs. Examples:
