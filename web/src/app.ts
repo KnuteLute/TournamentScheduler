@@ -2,6 +2,7 @@ import express, { type Express, type Request, type Response } from 'express';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import dotenv from 'dotenv';
+import { rateLimit } from 'express-rate-limit';
 import { createApiRouter } from './api/router';
 import { ApiProblem, sendProblem } from './api/problem';
 import { createApiConfig, type ApiConfig } from './config/api';
@@ -14,6 +15,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env'), override: false, qu
 export interface ApplicationOptions {
   staticDirectory?: string;
   production?: boolean;
+  publicFileRequestLimit?: number;
 }
 
 function setSecurityHeaders(response: Response, production: boolean): void {
@@ -81,6 +83,10 @@ export function createApplication(
     options.staticDirectory ?? path.join(__dirname, '../public'),
   );
   const spaEntry = path.join(staticDirectory, 'app', 'index.html');
+  const publicFileRequestLimit = options.publicFileRequestLimit ?? 1000;
+  if (!Number.isSafeInteger(publicFileRequestLimit) || publicFileRequestLimit < 1 || publicFileRequestLimit > 10_000) {
+    throw new Error('Public file request limit must be an integer between 1 and 10000.');
+  }
 
   application.disable('x-powered-by');
   application.use((_request, response, next) => {
@@ -88,6 +94,20 @@ export function createApplication(
     next();
   });
   application.use('/api/v1', createApiRouter(store, config));
+
+  // Bound public file-serving work as well as the separately protected API.
+  // Do not trust caller-supplied proxy headers. Vercel serves built assets at
+  // its CDN; this limiter also protects direct/local Express deployments.
+  const publicFilesLimit = rateLimit({
+    windowMs: 60_000,
+    limit: publicFileRequestLimit,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_request, response) => {
+      sendProblem(response, new ApiProblem(429, 'rate-limited', 'Too Many Requests', 'Request rate limit exceeded.'), randomUUID());
+    },
+  });
+  application.use(publicFilesLimit);
 
   application.use(express.static(staticDirectory, {
     index: false,

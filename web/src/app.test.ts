@@ -66,4 +66,15 @@ describe('same-origin application composition', () => {
     assert.equal(response.status, 503);
     assert.deepEqual(response.body, { status: 'not_ready' });
   });
+
+  it('rate limits public file-serving requests without throttling API liveness', async () => {
+    const app = createApplication(testStore(), config, { publicFileRequestLimit: 2 });
+    await request(app).get('/').expect(303);
+    await request(app).get('/').expect(303);
+    const blocked = await request(app).get('/');
+    assert.equal(blocked.status, 429);
+    assert.equal(blocked.body.code, 'rate-limited');
+    assert.ok(blocked.headers['retry-after']);
+    await request(app).get('/api/v1/health/live').expect(200);
+  });
 });
