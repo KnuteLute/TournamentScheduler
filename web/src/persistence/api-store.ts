@@ -134,6 +134,7 @@ interface MatchRow {
   version: number;
   start_time: Date | null;
   end_time: Date | null;
+  completed_at: Date | null;
   created_at: Date;
 }
 
@@ -1107,7 +1108,7 @@ export class PostgresApiStore implements ApiStore {
     }
     const matchRows=await tx.query<MatchRow>(
       `SELECT id,public_id::text,external_id,tournament_id,round,sequence_no,normalized_status,winner_side,version,
-        start_time,end_time,created_at FROM matches WHERE tournament_id=$1 AND owner_id=$2
+        start_time,end_time,completed_at,created_at FROM matches WHERE tournament_id=$1 AND owner_id=$2
        ORDER BY sequence_no,id`,[row.id,ownerId],
     );
     const matches:DomainMatch[]=[];
@@ -1142,7 +1143,7 @@ export class PostgresApiStore implements ApiStore {
           pausedAt:dateText(pause.started_at)!,resumedAt:dateText(pause.ended_at),reason:pause.reason,
         })),version:Number(match.version),
         ...(match.start_time?{startTime:dateText(match.start_time)!}:{}),
-        ...(match.end_time?{endTime:dateText(match.end_time)!}:{}),
+        ...(match.completed_at?{endTime:dateText(match.completed_at)!}:{}),
       });
     }
     const events=await tx.query<{round_no:number;event_type:'bye'|'rest';subject_type:'player'|'fixed_team';subject_id:string;player_name_snapshot:string}>(

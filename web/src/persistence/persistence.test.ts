@@ -13,6 +13,8 @@ import {
   DEFAULT_POSTGRES_IMPORT_BATCH_SIZE,
   isIdenticalCompletedPostgresBatch,
   MAX_POSTGRES_IMPORT_BATCH_SIZE,
+  normalizeLegacyMatchResult,
+  parseLegacySides,
   postgresSourceSignature,
   validatePostgresImportCheckpoint,
 } from './legacy-import';
@@ -35,6 +37,38 @@ export async function runPersistenceUnitTests(): Promise<void> {
   assert.doesNotThrow(()=>validatePostgresImportCheckpoint(importSignature,importSignature,importSignature));
   assert.throws(()=>validatePostgresImportCheckpoint(importSignature,postgresSourceSignature(importCounts,{...importHighWater,players:5}),importSignature),/inventory changed/);
   assert.throws(()=>validatePostgresImportCheckpoint(importSignature,importSignature,Buffer.alloc(32)),/checkpoint checksum/);
+  const initializedScores=parseLegacySides([
+    {participants:[{id:'1',name:'A'}],score:0},
+    {participants:[{id:'2',name:'B'}],score:0},
+  ]);
+  assert.deepStrictEqual(normalizeLegacyMatchResult('scheduled',null,initializedScores),{
+    status:'scheduled',scores:[null,null],winnerSide:null,completedAt:null,needsReview:false,warnings:[],
+  });
+  assert.deepStrictEqual(normalizeLegacyMatchResult('skipped',new Date('2029-01-01T00:00:00.000Z'),initializedScores),{
+    status:'skipped',scores:[null,null],winnerSide:null,completedAt:null,needsReview:false,warnings:[],
+  });
+  assert.deepStrictEqual(normalizeLegacyMatchResult('paused',new Date('2029-01-01T00:00:00.000Z'),initializedScores),{
+    status:'paused',scores:[null,null],winnerSide:null,completedAt:null,needsReview:false,warnings:[],
+  });
+  const completedScores=parseLegacySides([
+    {participants:[{id:'1',name:'A'}],score:4},
+    {participants:[{id:'2',name:'B'}],score:2},
+  ]);
+  assert.deepStrictEqual(normalizeLegacyMatchResult('completed',new Date('2029-01-01T00:00:00.000Z'),completedScores),{
+    status:'completed',scores:[4,2],winnerSide:1,completedAt:new Date('2029-01-01T00:00:00.000Z'),needsReview:false,warnings:[],
+  });
+  const missingCompletion=normalizeLegacyMatchResult('completed',null,completedScores);
+  assert.deepStrictEqual(missingCompletion.scores,[null,null]);
+  assert.strictEqual(missingCompletion.status,'scheduled');
+  assert.strictEqual(missingCompletion.needsReview,true);
+  const invalidScore=parseLegacySides([
+    {participants:[{id:'1',name:'A'}],score:1_000_001},
+    {participants:[{id:'2',name:'B'}],score:0},
+  ]);
+  const invalidCompleted=normalizeLegacyMatchResult('completed',new Date('2029-01-01T00:00:00.000Z'),invalidScore);
+  assert.deepStrictEqual(invalidCompleted.scores,[null,null]);
+  assert.strictEqual(invalidCompleted.winnerSide,null);
+  assert.strictEqual(invalidCompleted.needsReview,true);
   assert.strictEqual(NAME_CANONICALIZATION_VERSION, 'nfkc-casefold-whitespace-v1');
 
   const createdAt=new Date('2029-01-01T00:00:00.000Z');

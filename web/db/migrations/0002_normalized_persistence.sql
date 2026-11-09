@@ -112,11 +112,14 @@ UPDATE matches SET public_id = gen_random_uuid() WHERE public_id IS NULL;
 UPDATE matches SET sequence_no = id WHERE sequence_no IS NULL;
 UPDATE matches m SET owner_id = t.owner_id FROM tournaments t WHERE m.tournament_id = t.id AND m.owner_id IS NULL;
 UPDATE matches SET normalized_status = CASE
-  WHEN end_time IS NOT NULL THEN 'completed'
-  WHEN lower(coalesce(status, '')) IN ('paused', 'in_progress', 'scheduled', 'skipped') THEN lower(status)
+  WHEN lower(coalesce(status, '')) IN ('skipped', 'skip', 'void', 'voided') THEN 'skipped'
+  WHEN lower(coalesce(status, '')) = 'paused' THEN 'paused'
+  WHEN lower(coalesce(status, '')) IN ('in_progress', 'in-progress', 'playing') THEN 'in_progress'
+  WHEN lower(coalesce(status, '')) IN ('scheduled', 'pending', '') THEN 'scheduled'
+  WHEN lower(coalesce(status, '')) IN ('completed', 'complete', 'finished', 'done') AND end_time IS NOT NULL THEN 'completed'
   ELSE 'scheduled'
 END;
-UPDATE matches SET completed_at = end_time WHERE completed_at IS NULL AND end_time IS NOT NULL;
+UPDATE matches SET completed_at = end_time WHERE completed_at IS NULL AND end_time IS NOT NULL AND normalized_status = 'completed';
 ALTER TABLE matches ALTER COLUMN public_id SET NOT NULL;
 ALTER TABLE matches ALTER COLUMN sequence_no SET NOT NULL;
 ALTER TABLE matches ADD CONSTRAINT matches_sequence_positive CHECK (sequence_no > 0) NOT VALID;

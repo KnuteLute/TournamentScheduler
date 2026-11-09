@@ -3,6 +3,8 @@ import { basename, resolve } from 'path';
 import { PostgresDatabase, Queryable } from './database';
 import { QueryResultRow } from 'pg';
 import { canonicalizeName, NAME_CANONICALIZATION_VERSION } from '../domain/names';
+import { isValidInstant } from '../domain/validation';
+import { MAX_SCORE } from '../domain/types';
 
 export type LegacyEntity = 'users' | 'players' | 'tournaments' | 'matches';
 
@@ -343,44 +345,105 @@ interface LegacyMatch extends QueryResultRow {
   user_id: number | null;
   guest_session_id: string | null;
   teams: unknown;
+  status: string | null;
   start_time: Date | string | null;
   end_time: Date | string | null;
 }
 
-interface LegacySide {
+export interface LegacySide {
   participants: Array<{ id?: unknown; name?: unknown }>;
   score?: unknown;
 }
 
-function parseLegacySides(value: unknown): { sides: LegacySide[] | null; warning?: string } {
+export interface ParsedLegacySides {
+  sides: LegacySide[] | null;
+  warnings: string[];
+}
+
+export interface NormalizedLegacyMatchResult {
+  status: 'scheduled' | 'in_progress' | 'paused' | 'completed' | 'skipped';
+  scores: [number | null, number | null];
+  winnerSide: 1 | 2 | null;
+  completedAt: Date | null;
+  needsReview: boolean;
+  warnings: string[];
+}
+
+export function parseLegacySides(value: unknown): ParsedLegacySides {
+  const invalid=(warning:string):ParsedLegacySides=>({sides:null,warnings:[warning]});
   let parsed = value;
   if (typeof parsed === 'string') {
-    try { parsed = JSON.parse(parsed); } catch { return { sides: null, warning: 'invalid_match_json' }; }
+    try { parsed = JSON.parse(parsed); } catch { return invalid('invalid_match_json'); }
   }
-  if (!Array.isArray(parsed) || parsed.length !== 2) return { sides: null, warning: 'match_must_have_two_sides' };
+  if (!Array.isArray(parsed) || parsed.length !== 2) return invalid('match_must_have_two_sides');
   const sides: LegacySide[] = [];
+  const warnings:string[]=[];
   for (const rawSide of parsed) {
     if (!rawSide || typeof rawSide !== 'object' || !Array.isArray((rawSide as { participants?: unknown }).participants)) {
-      return { sides: null, warning: 'invalid_side_shape' };
+      return invalid('invalid_side_shape');
     }
     const participants = (rawSide as { participants: unknown[] }).participants;
-    if (participants.length < 1 || participants.length > 2) return { sides: null, warning: 'invalid_side_participant_count' };
+    if (participants.length < 1 || participants.length > 2) return invalid('invalid_side_participant_count');
     const normalized = [] as LegacySide['participants'];
     for (const participant of participants) {
-      if (!participant || typeof participant !== 'object') return { sides: null, warning: 'invalid_match_participant' };
+      if (!participant || typeof participant !== 'object') return invalid('invalid_match_participant');
       const item = participant as { id?: unknown; name?: unknown };
       if (typeof item.name !== 'string' || item.name.trim().length === 0 || item.name.length > 255) {
-        return { sides: null, warning: 'invalid_match_name_snapshot' };
+        return invalid('invalid_match_name_snapshot');
       }
       normalized.push({ id: item.id, name: item.name });
     }
     const score = (rawSide as { score?: unknown }).score;
-    if (score !== undefined && score !== null && (!Number.isSafeInteger(score) || Number(score) < 0)) {
-      return { sides: null, warning: 'invalid_match_score' };
+    if (score !== undefined && score !== null && (!Number.isSafeInteger(score) || Number(score) < 0 || Number(score)>MAX_SCORE)) {
+      warnings.push('invalid_match_score');
+      sides.push({participants:normalized});
+      continue;
     }
     sides.push({ participants: normalized, score });
   }
-  return { sides };
+  return { sides,warnings };
+}
+
+function validLegacyInstant(value:Date|string|null):Date|null{
+  if(value===null)return null;
+  if(value instanceof Date)return Number.isNaN(value.getTime())?null:value;
+  if(!isValidInstant(value))return null;
+  const date=new Date(value);return Number.isNaN(date.getTime())?null:date;
+}
+
+/** Normalize historical scores only when the source provides a completed result. */
+export function normalizeLegacyMatchResult(
+  legacyStatus:string|null,
+  endTime:Date|string|null,
+  parsed:ParsedLegacySides,
+):NormalizedLegacyMatchResult{
+  const status=(legacyStatus??'').trim().toLowerCase().replace(/[\s-]+/gu,'_');
+  const explicitSkipped=['skipped','skip','void','voided'].includes(status);
+  const explicitPaused=status==='paused';
+  const explicitInProgress=['in_progress','playing'].includes(status);
+  const explicitScheduled=['scheduled','pending',''].includes(status);
+  const completedStatus=['completed','complete','finished','done'].includes(status);
+  const validTime=validLegacyInstant(endTime);
+  const sides=parsed.sides;
+  const bothScores=sides!==null&&sides.length===2&&sides.every(side=>
+    typeof side.score==='number'&&Number.isSafeInteger(side.score)&&side.score>=0&&side.score<=MAX_SCORE);
+  const scoreValues=bothScores?[Number(sides![0]!.score),Number(sides![1]!.score)] as [number,number]:null;
+  const hasCompletionEvidence=completedStatus||(!status&&endTime!==null);
+  const warnings=parsed.warnings.slice();
+  if(explicitSkipped)return {status:'skipped',scores:[null,null],winnerSide:null,completedAt:null,needsReview:parsed.sides===null||warnings.length>0,warnings};
+  if(explicitPaused)return {status:'paused',scores:[null,null],winnerSide:null,completedAt:null,needsReview:parsed.sides===null||warnings.length>0,warnings};
+  if(explicitInProgress)return {status:'in_progress',scores:[null,null],winnerSide:null,completedAt:null,needsReview:parsed.sides===null||warnings.length>0,warnings};
+  if(explicitScheduled&&endTime===null&&warnings.length===0){
+    return {status:'scheduled',scores:[null,null],winnerSide:null,completedAt:null,needsReview:false,warnings:[]};
+  }
+  if(hasCompletionEvidence&&validTime&&scoreValues){
+    return {status:'completed',scores:scoreValues,winnerSide:scoreValues[0]===scoreValues[1]?null:scoreValues[0]>scoreValues[1]?1:2,
+      completedAt:validTime,needsReview:false,warnings:[]};
+  }
+  if(!completedStatus&&!explicitScheduled)warnings.push('unknown_legacy_match_status');
+  if(hasCompletionEvidence||endTime!==null||warnings.length>0)warnings.push('completed_match_result_unverifiable');
+  return {status:'scheduled',scores:[null,null],winnerSide:null,completedAt:null,needsReview:hasCompletionEvidence||endTime!==null||warnings.length>0,
+    warnings:Array.from(new Set(warnings))};
 }
 
 function legacyPlayerId(value: unknown): number | null {
@@ -545,7 +608,7 @@ export async function importLegacyPostgres(
     };
     const dependenciesComplete=nextCheckpoint.users>=highWater.users&&nextCheckpoint.players>=highWater.players&&nextCheckpoint.tournaments>=highWater.tournaments;
     const matches=dependenciesComplete?await selectPage<LegacyMatch>(
-      'SELECT id,tournament_id,user_id,guest_session_id,teams,start_time,end_time FROM matches WHERE id>$1 AND id<=$2 ORDER BY id LIMIT $3',
+      'SELECT id,tournament_id,user_id,guest_session_id,status,teams,start_time,end_time FROM matches WHERE id>$1 AND id<=$2 ORDER BY id LIMIT $3',
       checkpoint.matches,highWater.matches,
     ):[];
     if(dependenciesComplete)nextCheckpoint.matches=pageCursor(checkpoint.matches,matches,highWater.matches);
@@ -677,6 +740,8 @@ export async function importLegacyPostgres(
     for (const row of matches) {
       const rowHash = hashRecord(row);
       const sourceState = await sourceRecordState(tx, 'legacy-postgres', 'matches', String(row.id), rowHash);
+      const parsed = parseLegacySides(row.teams);
+      const normalized = normalizeLegacyMatchResult(row.status,row.end_time,parsed);
       const tournamentRows=row.tournament_id===null?[]:await tx.query<LegacyTournament & {owner_id:string|null}>(
         `SELECT id,user_id,guest_session_id,owner_id::text FROM tournaments WHERE id=$1`,[row.tournament_id],
       );
@@ -692,7 +757,12 @@ export async function importLegacyPostgres(
         && row.user_id === sourceTournament.user_id
         && row.guest_session_id === sourceTournament.guest_session_id;
       if (canInherit && ownerId && !sourceState.changed && !sourceState.unresolved) {
-        await tx.execute('UPDATE matches SET owner_id = $1, import_batch_id = $2 WHERE id = $3 AND owner_id IS NULL', [ownerId, batchId, row.id]);
+        await tx.execute(
+          `UPDATE matches SET owner_id=coalesce(owner_id,$1),import_batch_id=coalesce(import_batch_id,$2),
+             normalized_status=$3,winner_side=$4,completed_at=$5
+           WHERE id=$6 AND (owner_id IS NULL OR owner_id=$1)`,
+          [ownerId,batchId,normalized.status,normalized.winnerSide,normalized.completedAt,row.id],
+        );
       }
       if (!canInherit || sourceState.changed || sourceState.unresolved) {
         needsReview += 1;
@@ -701,24 +771,18 @@ export async function importLegacyPostgres(
         ...(!canInherit ? ['match_owner_does_not_match_tournament'] : []),
         ...(sourceState.changed ? ['source_record_changed_review_required'] : []),
         ...(!sourceState.changed && sourceState.unresolved ? ['prior_review_unresolved'] : []),
+        ...normalized.warnings,
       ];
-      const parsed = parseLegacySides(row.teams);
-      if (!parsed.sides) {
-        warnings.push(parsed.warning || 'invalid_match_shape');
-        needsReview += 1;
-      } else if (canInherit && ownerId && !sourceState.changed && !sourceState.unresolved && row.tournament_id !== null) {
-        const scores = parsed.sides.map(side => side.score);
-        const completedAt = row.end_time
-          ? (row.end_time instanceof Date ? row.end_time : new Date(row.end_time))
-          : null;
-        const winnerSide = typeof scores[0] === 'number' && typeof scores[1] === 'number' && scores[0] !== scores[1]
-          ? (scores[0] > scores[1] ? 1 : 2) : null;
+      if(normalized.needsReview)needsReview+=1;
+      if (parsed.sides && canInherit && ownerId && !sourceState.changed && !sourceState.unresolved && row.tournament_id !== null) {
         for (let sideIndex = 0; sideIndex < parsed.sides.length; sideIndex += 1) {
           const side = parsed.sides[sideIndex]!;
-          const score = typeof side.score === 'number' ? side.score : null;
+          // Legacy score fields commonly contain 0 before play. Only a
+          // validated completed result may retain either side's score.
+          const score = normalized.status==='completed' ? normalized.scores[sideIndex]! : null;
           await tx.execute(
             `INSERT INTO match_sides (match_id, tournament_id, owner_id, side_no, score)
-             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (match_id, side_no) DO NOTHING`,
+             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (match_id, side_no) DO UPDATE SET score=EXCLUDED.score`,
             [row.id, row.tournament_id, ownerId, sideIndex + 1, score],
           );
           for (let position = 0; position < side.participants.length; position += 1) {
@@ -741,12 +805,7 @@ export async function importLegacyPostgres(
             );
           }
         }
-        await tx.execute(
-          `UPDATE matches SET winner_side = $1, completed_at = COALESCE(completed_at, $2)
-           WHERE id = $3 AND owner_id = $4`,
-          [winnerSide, completedAt, row.id, ownerId],
-        );
-        if (warnings.includes('participant_reference_unverified')) needsReview += 1;
+        if(warnings.includes('participant_reference_unverified'))needsReview+=1;
       }
       const ownerStatus=ownerId?await tx.query<{status:string}>('SELECT status FROM data_owners WHERE id=$1',[ownerId]):[];
       const tournamentIsAccountOwned=ownerStatus[0]?.status==='active'&&sourceTournament!==undefined

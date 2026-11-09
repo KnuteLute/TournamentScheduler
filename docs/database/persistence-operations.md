@@ -99,6 +99,14 @@ An incomplete PostgreSQL import resumes from its persisted per-entity cursors.
 After completion, a later apply pass rescans stable source IDs; unchanged target
 rows are idempotent and changed source hashes are marked for review.
 
+For legacy matches, initialized `0`/`0` JSON scores are not treated as results.
+Only a completed/finished source status (or legacy status absent with completion
+time) with a valid completion timestamp and two bounded integer scores becomes
+normalized `completed` data. Scheduled, in-progress, paused, and skipped matches
+get `NULL` normalized scores and no winner; the original legacy JSON and timing
+columns remain unchanged. A purported completion with malformed/missing score
+or completion time is marked `needs_review` and normalized as non-completed.
+
 Import writes occur in a database transaction and preserve legacy columns and
 JSON. Review database backups, source hashes, collision reports, and unresolved
 quarantine before any separately approved account-claim or cutover operation.
