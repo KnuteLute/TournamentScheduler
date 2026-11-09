@@ -191,14 +191,14 @@ describe("Legacy HTTP method regression", () => {
 
 describe("Database and deployment security regressions awaiting real adapters", () => {
   test.todo("deployment injects rotated production secrets and verifies startup/log behavior in the target environment");
-  test.todo("PostgreSQL store enforces owner predicates and rejects foreign/unowned resource and roster IDs");
+  test.todo("complete PostgreSQL owner-isolation matrix covers every read/write, history, and derived-stat path");
   test.todo("guest transfer preserves owner isolation, collision policy, and retry safety in PostgreSQL");
-  test.todo("session rotation/revocation and multi-row mutations remain transactional and idempotent in persistence");
+  test.todo("login/claim rotation plus multi-row transaction and idempotency replay/conflict behavior are verified in persistence");
   test.todo("bounded runtime validators reject oversized, malformed, out-of-range, and hostile inputs without partial writes");
   test.todo("hostile SQL-looking names remain literal data and cannot change query meaning or access foreign rows");
   test.todo("persistent rate-limit buckets are atomic across instances and production proxy topology is verified");
   test.todo("interleaved sessions and separate app instances retain isolated tournament state");
-  test.todo("importer rejects unsafe inputs and preserves ownership, bounded work, and idempotent outcomes");
+  test.todo("legacy importer security review remains pending; not a release gate in this focused review");
   test.todo("captured application/proxy logs and errors redact passwords, tokens, cookies, and capabilities");
   test.todo("production runtime verifies secret provisioning, HTTPS cookies, TLS, and trusted proxy configuration");
   test.todo("offline mode is restricted to its approved single-user scope and cannot be selected in production");
