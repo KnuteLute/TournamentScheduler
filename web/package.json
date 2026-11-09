@@ -42,7 +42,7 @@
     "@types/node": "^22.15.30",
     "@types/pg": "^8.20.0",
     "ts-node": "^10.9.2",
-    "typescript": "^5.8.3"
+    "typescript": "^7.0.2"
   },
   "overrides": {
     "qs": "^6.16.2"
