@@ -92,6 +92,7 @@ paths:
               schema: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CsrfRejected' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /session/claim:
     post:
@@ -137,6 +138,7 @@ paths:
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /auth/register:
     post:
@@ -238,6 +240,7 @@ paths:
               schema: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CsrfRejected' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
 
   /players:
@@ -266,6 +269,7 @@ paths:
                         type: array
                         items: { $ref: '#/components/schemas/Player' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
     post:
       tags: [Players]
@@ -290,6 +294,7 @@ paths:
         '403': { $ref: '#/components/responses/CsrfRejected' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /players/{playerId}:
     parameters:
@@ -340,6 +345,7 @@ paths:
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
     delete:
       tags: [Players]
@@ -358,6 +364,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
 
   /teams:
@@ -382,6 +389,7 @@ paths:
                         type: array
                         items: { $ref: '#/components/schemas/Team' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
     post:
       tags: [Teams]
@@ -408,6 +416,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /teams/{teamId}:
     parameters:
@@ -464,6 +473,7 @@ paths:
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
     delete:
       tags: [Teams]
@@ -482,6 +492,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
 
   /tournaments:
@@ -513,6 +524,7 @@ paths:
                         type: array
                         items: { $ref: '#/components/schemas/Tournament' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
     post:
       tags: [Tournaments]
@@ -547,6 +559,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /tournaments/{tournamentId}:
     parameters:
@@ -593,6 +606,7 @@ paths:
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
     delete:
       tags: [Tournaments]
@@ -611,6 +625,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /tournaments/{tournamentId}/start:
     post:
@@ -644,6 +659,7 @@ paths:
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /tournaments/{tournamentId}/cancel:
     post:
@@ -669,6 +685,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /tournaments/{tournamentId}/pause:
     post:
@@ -694,6 +711,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /tournaments/{tournamentId}/resume:
     post:
@@ -719,6 +737,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /tournaments/{tournamentId}/finish:
     post:
@@ -744,6 +763,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /tournaments/{tournamentId}/availability:
     patch:
@@ -792,6 +812,7 @@ paths:
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /tournaments/{tournamentId}/matches:
     get:
@@ -824,6 +845,7 @@ paths:
                         items: { $ref: '#/components/schemas/Match' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /tournaments/{tournamentId}/schedule:
     get:
@@ -842,6 +864,7 @@ paths:
               schema: { $ref: '#/components/schemas/Schedule' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /tournaments/{tournamentId}/matches/{matchId}:
     parameters:
@@ -890,6 +913,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /tournaments/{tournamentId}/matches/{matchId}/pause:
     post:
@@ -916,6 +940,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /tournaments/{tournamentId}/matches/{matchId}/resume:
     post:
@@ -942,6 +967,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /tournaments/{tournamentId}/matches/{matchId}/result:
     post:
@@ -985,6 +1011,7 @@ paths:
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /tournaments/{tournamentId}/matches/{matchId}/skip:
     post:
@@ -1016,6 +1043,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /standings:
     get:
@@ -1045,6 +1073,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Standings' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
   /tournaments/{tournamentId}/standings:
     get:
@@ -1078,6 +1107,7 @@ paths:
               schema: { $ref: '#/components/schemas/Standings' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         default: { $ref: '#/components/responses/Problem' }
 
 components:
