@@ -69,7 +69,7 @@ function send(port: number, method: string, path: string, headers: Record<string
 	});
 }
 
-function mockStore(options: { session?: SessionRecord; allowRate?: boolean; value?: unknown } = {}): { store: ApiStore; operations: StoreRequest[]; rateRequests: RateLimitRequest[]; accountLookups: string[] } {
+function mockStore(options: { session?: SessionRecord; allowRate?: boolean; healthy?: boolean; value?: unknown } = {}): { store: ApiStore; operations: StoreRequest[]; rateRequests: RateLimitRequest[]; accountLookups: string[] } {
 	const operations: StoreRequest[] = [];
 	const rateRequests: RateLimitRequest[] = [];
 	const accountLookups: string[] = [];
@@ -87,7 +87,7 @@ function mockStore(options: { session?: SessionRecord; allowRate?: boolean; valu
 			operations.push(request);
 			return { value: (options.value ?? { ok: true }) as T, etag: "v1" };
 		},
-		healthCheck: async () => true,
+		healthCheck: async () => options.healthy ?? true,
 	};
 	return { store, operations, rateRequests, accountLookups };
 }
@@ -97,13 +97,28 @@ test("health is read-only and protected resources reject missing sessions", asyn
 	await withApi(store, async (port) => {
 		const live = await send(port, "GET", "/api/v1/health/live");
 		assert.equal(live.status, 200);
+		assert.deepEqual(JSON.parse(live.body), { status: "live" });
+		assert.equal(live.headers["cache-control"], "no-store");
 		assert.equal(rateRequests.length, 0);
 		const ready = await send(port, "GET", "/api/v1/health/ready");
 		assert.equal(ready.status, 200);
+		assert.deepEqual(JSON.parse(ready.body), { status: "ready" });
+		assert.equal(ready.headers["cache-control"], "no-store");
 		assert.equal(rateRequests.length, 1);
 		const players = await send(port, "GET", "/api/v1/players");
 		assert.equal(players.status, 401);
 		assert.equal(operations.length, 0);
+	});
+});
+
+test("readiness failure returns only the documented not_ready status", async () => {
+	const { store } = mockStore({ healthy: false });
+	await withApi(store, async (port) => {
+		const ready = await send(port, "GET", "/api/v1/health/ready");
+		assert.equal(ready.status, 503);
+		assert.deepEqual(JSON.parse(ready.body), { status: "not_ready" });
+		assert.equal(ready.headers["cache-control"], "no-store");
+		assert.doesNotMatch(ready.body, /database|connection|string|exception/i);
 	});
 });
 
