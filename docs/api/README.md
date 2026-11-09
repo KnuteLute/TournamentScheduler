@@ -65,6 +65,8 @@ For both views rank by **wins descending, point differential descending, points-
 - Do not expose persistence internals, owner IDs, raw sessions, or client-writable standings. PostgreSQL composite ownership relationships/foreign keys should reinforce the same-owner and same-tournament validations.
 - Keep runtime request/response validation and Vue-generated types aligned to this OpenAPI contract. Breaking wire changes require a new API version. This v1 contract does not assume that legacy EJS routes are inaccessible or safe; all server routes must share the same domain/authorization rules.
 
+The TypeScript contract package is `@tournament/contracts`. `packages/contracts/src/openapi.ts` is generated from this file by the pinned `openapi-typescript` dependency; do not hand-maintain DTO copies. Run `npm run build --prefix packages/contracts` to regenerate and compile the declarations. CI should run `npm run check:generated --prefix packages/contracts` to fail when the checked-in generated output differs from this canonical OpenAPI document.
+
 Validate with an OpenAPI 3.1-capable validator before implementation and in API-contract CI, for example:
 
 ```sh
