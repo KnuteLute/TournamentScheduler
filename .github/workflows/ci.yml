@@ -1,0 +1,196 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - upgrade/tournament-v2
+  push:
+    branches:
+      - upgrade/tournament-v2
+  merge_group:
+    types: [checks_requested]
+  schedule:
+    - cron: '29 6 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6.1.0
+        with:
+          persist-credentials: false
+      - name: Report missing canonical lint command
+        run: |
+          echo "::error::CI is blocked: web/package.json has no lint script and the rollout plan says no linter/command is established. The lead must define and verify it before this check can pass."
+          exit 1
+
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6.5.0
+        with:
+          node-version: 22.23.4
+      - name: Install locked web dependencies
+        run: npm ci --prefix web
+      - name: Type-check and compile web
+        run: npm run build --prefix web
+
+  unit:
+    name: unit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6.5.0
+        with:
+          node-version: 22.23.4
+      - name: Install locked web dependencies
+        run: npm ci --prefix web
+      - name: Run existing self-executing scheduler test
+        working-directory: web
+        run: npx ts-node src/lib/scheduler.test.ts
+
+  contract:
+    name: contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6.5.0
+        with:
+          node-version: 22.23.4
+      - name: Lint OpenAPI contract
+        run: npx --yes @redocly/cli lint docs/api/openapi.yaml
+
+  integration-postgres:
+    name: integration-postgres
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16.4-alpine
+        env:
+          POSTGRES_DB: tournament_test
+          POSTGRES_USER: tournament_test
+          POSTGRES_PASSWORD: disposable-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tournament_test -d tournament_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NODE_ENV: test
+      POSTGRES_URL: postgres://tournament_test:disposable-ci-only@localhost:5432/tournament_test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6.5.0
+        with:
+          node-version: 22.23.4
+      - name: Report missing migration and integration test commands
+        run: |
+          echo "::error::CI is blocked: no versioned migration command or canonical PostgreSQL integration test command is defined yet. The rollout plan requires these before this job can execute meaningful database tests."
+          exit 1
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16.4-alpine
+        env:
+          POSTGRES_DB: tournament_e2e
+          POSTGRES_USER: tournament_e2e
+          POSTGRES_PASSWORD: disposable-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tournament_e2e -d tournament_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NODE_ENV: test
+      POSTGRES_URL: postgres://tournament_e2e:disposable-ci-only@localhost:5432/tournament_e2e
+      JWT_SECRET: ci-only-synthetic-signing-key-not-for-deployment
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6.1.0
+        with:
+          persist-credentials: false
+      - name: Report missing browser harness and app test command
+        run: |
+          echo "::error::CI is blocked: the Playwright harness, frontend application, and canonical E2E command are not present yet. No production secrets are provided to this job."
+          exit 1
+
+  build:
+    name: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6.5.0
+        with:
+          node-version: 22.23.4
+      - name: Build current Express application
+        run: |
+          npm ci --prefix web
+          npm run build --prefix web
+      - name: Report missing Vue production build
+        if: ${{ hashFiles('frontend/package.json') == '' }}
+        run: echo "::warning::Vue production build is not present in this checkout; Vercel SPA build cannot be validated until frontend/package.json is merged."
+
+  security:
+    name: security
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6.5.0
+        with:
+          node-version: 22.23.4
+      - name: Audit root lockfile
+        run: npm audit --audit-level=high
+      - name: Audit web lockfile
+        run: npm audit --prefix web --audit-level=high

@@ -2,14 +2,39 @@
 
 ## Scope and current state
 
-This plan keeps the existing Vercel deployment target and PostgreSQL data store. It describes the controls to implement; it does not claim that these workflows or branch rules are already active.
+This plan keeps the existing Vercel deployment target and PostgreSQL data store. The Platform & CI work adds workflow/configuration foundations, but repository branch-protection rules, Vercel project settings, and several canonical test commands remain operator/lead follow-ups; this document does not claim those external controls are active.
 
-Repository observations to account for during implementation:
+Repository observations at the start of this workstream:
 
 - The application is under `web/`; `web/vercel.json` routes requests to `web/src/app.ts` using Vercel's Node builder.
 - The application connects to PostgreSQL using `POSTGRES_URL`. Database initialization currently lives in `web/scripts/init-db.ts` and uses `CREATE TABLE IF NOT EXISTS`; there is not yet a versioned migration history.
 - `web/package.json` defines `build` as `tsc`, but `test` is a placeholder that exits with an error. The root package has Jest dependencies and `jest.config.js`; a scheduler test exists at `web/src/lib/scheduler.test.ts`.
 - There are no established lint, contract, integration, or browser E2E scripts. Add and verify these commands before making their checks required.
+
+## Platform implementation status
+
+The workflows in `.github/workflows/` run PR and push checks for `upgrade/tournament-v2` (including merge-queue `merge_group` requests), use read-only repository permissions except for the narrowly scoped CodeQL job, and do not receive production credentials. CodeQL and npm audits also run on the scheduled weekly cadence after the workflow is present on the repository's default branch. Dependency Review blocks newly introduced high-severity vulnerabilities. Dependabot proposes weekly GitHub Actions and npm dependency updates.
+
+The currently executable checks use the repository's existing commands: `npm run build --prefix web`, the self-executing scheduler test (`npx ts-node src/lib/scheduler.test.ts` from `web/`), and the OpenAPI lint command documented in `docs/api/README.md`. Although the rollout plan proposed Jest, the current scheduler file registers no Jest tests and instead executes assertions at import/run time; use of Jest reports “suite must contain at least one test,” so the workflow runs its existing self-executing test directly until the lead defines the unit-test command. The `lint`, PostgreSQL integration, and E2E jobs deliberately report blockers instead of inventing scripts or pretending unimplemented tests passed. The PostgreSQL job has a disposable PostgreSQL 16.4 service; its test command remains blocked until the lead/persistence/quality workstreams define and verify a migration command and integration command. E2E remains blocked until the Vue frontend, Playwright harness, and canonical test command are present. Do not mark these checks required or treat this workflow as release-ready until those blockers are resolved and each job runs real checks. The workflow currently validates the Express build; the Vercel Vue build cannot be exercised in this checkout until `frontend/package.json` lands.
+
+Initial local `npm audit --audit-level=high` checks of both committed lockfiles fail: the root lockfile reports 3 high and 1 critical advisories (among other lower severities), and the web lockfile reports 1 high and 1 critical (plus 1 moderate). These are dependency-owner/lead blockers and are intentionally not suppressed or auto-fixed in this platform-only workstream. The `security` job will remain red until the dependency owners resolve or explicitly document scoped, expiring exceptions.
+
+GitHub Actions are pinned to full SHAs. Current pin sources, resolved from the upstream repositories' GitHub commit/tag API and retained as inline release comments:
+
+| Action | Release | Commit | Upstream tag-to-commit source |
+| --- | --- | --- | --- |
+| `actions/checkout` | v6.1.0 | `d23441a48e516b6c34aea4fa41551a30e30af803` | [GitHub API](https://api.github.com/repos/actions/checkout/commits/v6.1.0) |
+| `actions/setup-node` | v6.5.0 | `249970729cb0ef3589644e2896645e5dc5ba9c38` | [GitHub API](https://api.github.com/repos/actions/setup-node/commits/v6.5.0) |
+| `actions/dependency-review-action` | v5.0.0 | `a1d282b36b6f3519aa1f3fc636f609c47dddb294` | [GitHub API](https://api.github.com/repos/actions/dependency-review-action/commits/v5.0.0) |
+| `github/codeql-action` | v4.39.0 | `6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee` | [GitHub API](https://api.github.com/repos/github/codeql-action/commits/v4.39.0) |
+
+The CodeQL init/analyze steps intentionally share one commit. PR analysis does not upload findings, avoiding a need for write permissions on untrusted fork PRs; trusted pushes, manual runs, and the schedule upload to GitHub code scanning. npm audit, dependency review, CodeQL, and PR build/test jobs do not use Vercel/database production secrets.
+
+`compose.yaml` starts only a local PostgreSQL 16.4 database, binds it to loopback, and uses clearly synthetic local credentials. It is not a production or deployment template. Start/stop it with `docker compose up -d postgres` and `docker compose down` (use a separate deliberate volume removal only when local data may be discarded).
+
+### Vercel and SPA/API routing
+
+`web/vercel.json` keeps the Express Node function as the API and legacy route target, routes `/api/**` to it, and maps `/app/**` to the static Vue SPA with `/app/` as the asset base and SPA-history fallback. The static build expects `frontend/package.json` to run a Vite-compatible `build` script and emit `dist/`. The current checkout does not contain that frontend yet, so the Vercel config cannot be validated until that workstream is integrated. Vercel must keep the `web` project root and allow build access to files outside the root directory so `../frontend` can be built. Do not promote a deployment with an unresolved missing frontend build. API/function routes must remain ahead of SPA fallback routes.
 
 ## GitHub Actions design
 
