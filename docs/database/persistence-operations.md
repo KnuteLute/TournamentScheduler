@@ -1,13 +1,45 @@
 # Persistence implementation notes
 
+## API store adapter
+
+`web/src/persistence/api-store.ts` imports and implements the backend-owned
+`ApiStore` port from `web/src/services/ports.ts`. The production wiring entry is
+`createPostgresApiStore(env?: NodeJS.ProcessEnv): ApiStore`; construction
+validates PostgreSQL configuration and creates a bounded lazy pool, without
+opening a connection. `PostgresApiStore.close(): Promise<void>` and
+`PostgresDatabase.close(): Promise<void>` are available to server/test lifecycle
+owners; the store adapter does not mount itself into the application.
+
+All `StoreOperation` mutations use a database transaction. Idempotency rows are
+claimed and completed in the same transaction as data changes; stored auth
+outcomes contain no raw session token/hash or password. Authentication retries
+create a new token-hash/CSRF-hash session row and revoke a prior session tied to
+the same idempotency request. Resource SQL includes the verified actor's owner
+scope; foreign resource IDs return the port's not-found error. Schedule,
+lifecycle, score, and standings changes call the shared domain functions.
+
+Guest transfer locks both owners, resolves all player/team name collisions
+explicitly, then updates the domain root owner IDs in one transaction.
+Composite foreign keys defer validation and cascade along a single root-to-child
+path; sibling links use deferred checks so a failed midway transfer rolls back
+without losing history or snapshots.
+
 ## Migration runner
 
 PostgreSQL schema changes are under `web/db/migrations/`, ordered by their
-four-digit version. `web/scripts/migrate.ts` creates/uses the
+four-digit version. `web/scripts/migrate.ts` defaults to read-only status;
+`--apply` is required to mutate the database. Apply creates/uses the
 `schema_migrations` checksum ledger, serializes execution with a PostgreSQL
 advisory lock, and applies each migration transactionally. A checksum mismatch,
 partial legacy schema, or database version unknown to the checked-out code is a
-hard failure; the runner does not attempt to repair or reset a schema.
+hard failure; the runner does not attempt to repair or reset a schema. The
+script is operator-invoked only and is never run during application startup.
+
+```sh
+cd web
+npx ts-node scripts/migrate.ts --status   # default; read-only
+npx ts-node scripts/migrate.ts --apply    # explicit schema mutation
+```
 
 Migration `0001_legacy_baseline.sql` creates the legacy-compatible base schema
 only for an empty database. When all four recognized legacy tables already
@@ -15,7 +47,14 @@ exist, the runner records that baseline without executing the SQL. Migration
 `0002_normalized_persistence.sql` is additive and retains legacy JSON and owner
 columns. It does not import data or make legacy guest cookies valid.
 `0003_rate_limit_buckets.sql` adds the cross-instance fixed-window counter store;
-it contains no raw network, account, or session identifiers.
+it contains no raw network, account, or session identifiers. `0004_api_store.sql`
+adds API resource fields and links guest-claim sessions to fresh session rows.
+Composite owner foreign keys are deferred. Root-to-child relationships cascade
+owner changes along one dependency path while sibling composite references use
+deferred checks, allowing an atomic owner transfer to preserve IDs and snapshots
+across players, teams, enrollments, fixed entries, matches, sides, and match
+players. The claim updates all owning roots in one transaction and resolves all
+canonical-name collisions before those owner changes.
 
 Run migrations as an explicit operator-controlled command, not during API
 startup, Vercel previews, or every serverless invocation. `POSTGRES_URL` is
@@ -35,7 +74,7 @@ npx ts-node scripts/import-legacy.ts --source local-json --file .local-data/offl
 npx ts-node scripts/import-legacy.ts --source local-json --file .local-data/offline-db.json --apply
 npx ts-node scripts/import-legacy.ts --source local-json --file database/players_index.json --file database/tournament_history.json --file database/match_history.json
 npx ts-node scripts/import-legacy.ts --source postgres
-npx ts-node scripts/import-legacy.ts --source postgres --apply
+npx ts-node scripts/import-legacy.ts --source postgres --apply --limit 250
 npx ts-node scripts/import-legacy.ts --reconcile
 ```
 
@@ -48,17 +87,23 @@ per-record hashes/provenance. Legacy guest rows map only to non-authenticating
 quarantined owners; their old cookie strings are represented only by hashes and
 are never inserted into `guest_sessions`. Name collisions, malformed rows,
 invalid stats, and cross-owner participant references are retained for review.
-Re-running an identical complete source batch is a no-op.
+An incomplete PostgreSQL import resumes from its persisted per-entity cursors.
+After completion, a later apply pass rescans stable source IDs; unchanged target
+rows are idempotent and changed source hashes are marked for review.
 
 Import writes occur in a database transaction and preserve legacy columns and
 JSON. Review database backups, source hashes, collision reports, and unresolved
 quarantine before any separately approved account-claim or cutover operation.
 This CLI does not claim that migration or import has been production-applied.
-Each apply batch is bounded: local JSON is capped at 10,000 records / 50 MiB,
-and the PostgreSQL backfill refuses a source over 1,000 total legacy rows rather
-than opening an unbounded transaction. Larger PostgreSQL sources require an
-operator-reviewed, checkpointed bulk-import procedure before application; the
-CLI reports the refusal and performs no writes.
+Each apply transaction is bounded: local JSON is capped at 10,000 records /
+50 MiB, and PostgreSQL imports use an ordered high-water mark with persisted
+per-entity ID cursors (default 250 rows per entity, configurable up to 1,000).
+If the output reports `checkpointed_batch_incomplete`, rerun the same `--apply`
+command to resume; the source mapping and cursor advance atomically with every
+page. The safe JSON output includes per-entity `checkpoint` and `highWater` IDs.
+After completion, run another dry-run/apply pass to reconcile source rows
+written or changed during the scan. Use a write freeze/catch-up boundary for
+production backfills as required by the migration plan.
 
 ## Local JSON safety boundary
 
@@ -104,3 +149,9 @@ controlled maintenance/scheduled task, not as an unbounded request-path scan.
 concurrent consumers using two independent pools. It requires `NODE_ENV=test`,
 `RATE_LIMIT_TEST_DATABASE_URL` pointed at an isolated migrated database whose
 name contains `test`; it must never be pointed at deployed data.
+
+`web/scripts/test-api-store-postgres.ts` exercises every `ApiStore` operation,
+idempotency replay/hash conflicts, sessions, cross-owner not-found behavior,
+guest-name collision rollback, and a normalized guest-owner transfer. It is also
+restricted to an isolated migrated test database whose name contains `test`.
+It was not runtime-verified when PostgreSQL was unavailable.

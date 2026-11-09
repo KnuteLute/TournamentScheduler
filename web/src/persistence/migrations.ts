@@ -25,6 +25,12 @@ export interface MigrationResult {
   baselinedLegacySchema: boolean;
 }
 
+export interface MigrationStatus {
+  applied: number[];
+  pending: number[];
+  legacyBaselineCandidate: boolean;
+}
+
 function checksum(sql: string): string {
   return createHash('sha256').update(sql, 'utf8').digest('hex');
 }
@@ -89,6 +95,47 @@ async function baselineLegacySchema(client: Client, migration: MigrationFile): P
   return true;
 }
 
+/** Read-only migration status; does not create or alter the ledger/schema. */
+export async function migrationStatus(
+  directory: string,
+  connectionConfig: PoolConfig = postgresPoolConfig(process.env),
+): Promise<MigrationStatus> {
+  const migrations = await readMigrations(directory);
+  const client = new Client(connectionConfig);
+  try {
+    await client.connect();
+    await client.query('SET search_path TO public, pg_catalog');
+    const ledgerExists = await relationExists(client, 'schema_migrations');
+    if (!ledgerExists) {
+      const core = await Promise.all(['users', 'players', 'tournaments', 'matches'].map(name => relationExists(client, name)));
+      if (core.some(Boolean) && !core.every(Boolean)) {
+        throw new Error('Database contains a partial legacy schema; refusing to guess or mutate it');
+      }
+      const legacyBaselineCandidate = core.every(Boolean);
+      return {
+        applied: [],
+        pending: migrations.slice(legacyBaselineCandidate ? 1 : 0).map(migration => migration.version),
+        legacyBaselineCandidate,
+      };
+    }
+    const rows = await client.query<{ version: number; name: string; checksum: string }>(
+      'SELECT version,name,checksum FROM schema_migrations ORDER BY version',
+    );
+    const available = new Map(migrations.map(migration => [migration.version, migration]));
+    for (const row of rows.rows) {
+      const file = available.get(Number(row.version));
+      if (!file || file.name !== row.name || file.checksum !== row.checksum) {
+        throw new Error('Database migration ledger differs from this release');
+      }
+    }
+    const applied = rows.rows.map(row => Number(row.version));
+    const appliedSet = new Set(applied);
+    return { applied, pending: migrations.filter(migration => !appliedSet.has(migration.version)).map(migration => migration.version), legacyBaselineCandidate: false };
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
 async function appliedMigrations(db: Queryable): Promise<AppliedMigration[]> {
   const rows = await db.query<{ version: number; name: string; checksum: string; applied_at: Date } & QueryResultRow>(
     'SELECT version, name, checksum, applied_at FROM schema_migrations ORDER BY version',
@@ -101,11 +148,15 @@ export async function applyMigrations(directory: string, connectionConfig: PoolC
   const migrations = await readMigrations(directory);
   if (migrations.length === 0) throw new Error('No database migrations were found');
   const client = new Client(connectionConfig);
-  await client.connect();
   const result: MigrationResult = { applied: [], alreadyApplied: [], baselinedLegacySchema: false };
+  let connected = false;
+  let lockAcquired = false;
   try {
+    await client.connect();
+    connected = true;
     await client.query('SET search_path TO public, pg_catalog');
     await client.query('SELECT pg_advisory_lock($1)', [7281946301]);
+    lockAcquired = true;
     await client.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
@@ -171,9 +222,11 @@ export async function applyMigrations(directory: string, connectionConfig: PoolC
     return result;
   } finally {
     try {
-      await client.query('SELECT pg_advisory_unlock($1)', [7281946301]);
+      if (connected && lockAcquired) await client.query('SELECT pg_advisory_unlock($1)', [7281946301]);
+    } catch {
+      // Do not leak driver details or hide the migration outcome on cleanup.
     } finally {
-      await client.end();
+      await client.end().catch(() => undefined);
     }
   }
 }

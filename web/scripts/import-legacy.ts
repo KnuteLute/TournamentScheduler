@@ -1,13 +1,14 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { PostgresDatabase } from '../src/persistence/database';
-import { importLegacyPostgres, inspectLocalJson, MAX_LOCAL_IMPORT_BYTES, reconcileLegacyData } from '../src/persistence/legacy-import';
+import { DEFAULT_POSTGRES_IMPORT_BATCH_SIZE, importLegacyPostgres, inspectLocalJson, MAX_LOCAL_IMPORT_BYTES, MAX_POSTGRES_IMPORT_BATCH_SIZE, reconcileLegacyData } from '../src/persistence/legacy-import';
 
 interface Options {
   source: 'postgres' | 'local-json';
   files: string[];
   apply: boolean;
   reconcile: boolean;
+  batchSize: number;
 }
 
 function parseArgs(args: string[]): Options {
@@ -15,6 +16,7 @@ function parseArgs(args: string[]): Options {
   const files: string[] = [];
   let apply = false;
   let reconcile = false;
+  let batchSize=DEFAULT_POSTGRES_IMPORT_BATCH_SIZE;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '--source') {
@@ -29,6 +31,10 @@ function parseArgs(args: string[]): Options {
       apply = true;
     } else if (arg === '--reconcile') {
       reconcile = true;
+    } else if(arg==='--limit'){
+      const value=args[++index];
+      if(!value||!/^\d+$/.test(value))throw new Error('--limit must be an integer');
+      batchSize=Number(value);
     } else if (arg === '--dry-run') {
       apply = false;
     } else {
@@ -42,7 +48,9 @@ function parseArgs(args: string[]): Options {
   }
   if (files.length > 100) throw new Error('At most 100 local source files may be processed per invocation');
   if (source === 'postgres' && files.length > 0 && args.includes('--file')) throw new Error('--file is only valid for local-json sources');
-  return { source, files, apply, reconcile };
+  if(batchSize<1||batchSize>MAX_POSTGRES_IMPORT_BATCH_SIZE)throw new Error(`--limit must be between 1 and ${MAX_POSTGRES_IMPORT_BATCH_SIZE}`);
+  if(source==='local-json'&&args.includes('--limit'))throw new Error('--limit applies only to PostgreSQL imports');
+  return { source, files, apply, reconcile, batchSize };
 }
 
 async function main(): Promise<void> {
@@ -56,7 +64,7 @@ async function main(): Promise<void> {
     }
     let summary;
     if (options.source === 'postgres') {
-      summary = await importLegacyPostgres(db!, options.apply);
+      summary = await importLegacyPostgres(db!, options.apply, options.batchSize);
     } else {
       const localSummaries = [];
       for (const file of options.files) {

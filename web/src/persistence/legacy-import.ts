@@ -12,6 +12,8 @@ export interface LegacyImportSummary {
   dryRun: boolean;
   batchId?: string;
   counts: Record<string, number>;
+  checkpoint?: Record<string, number>;
+  highWater?: Record<string, number>;
   quarantined: number;
   needsReview: number;
   noOp: boolean;
@@ -25,7 +27,8 @@ interface LegacyJsonRow extends Record<string, unknown> {
 const ENTITIES: LegacyEntity[] = ['users', 'players', 'tournaments', 'matches'];
 export const MAX_LOCAL_IMPORT_BYTES = 50 * 1024 * 1024;
 export const MAX_LOCAL_IMPORT_RECORDS = 10_000;
-export const MAX_POSTGRES_IMPORT_RECORDS_PER_BATCH = 1_000;
+export const DEFAULT_POSTGRES_IMPORT_BATCH_SIZE = 250;
+export const MAX_POSTGRES_IMPORT_BATCH_SIZE = 1_000;
 
 function digest(value: string | Buffer): Buffer {
   return createHash('sha256').update(value).digest();
@@ -35,10 +38,25 @@ function hashRecord(row: unknown): Buffer {
   return digest(JSON.stringify(row));
 }
 
+function postgresSourceSignature(counts:Record<string,number>,highWater:Record<string,number>):Buffer{
+  return digest(['users','players','tournaments','matches'].map(entity=>
+    `${entity}:${counts[entity]??0}:${highWater[entity]??0}`,
+  ).join('\n'));
+}
+
 function asStableId(value: unknown): string | null {
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return String(value);
   if (typeof value === 'string' && value.length > 0 && value.length <= 200) return value;
   return null;
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function safeInteger(value: unknown): number {
+  const parsed=Number(value);
+  return Number.isSafeInteger(parsed)&&parsed>=0?parsed:0;
 }
 
 function safeLocalSourceLabel(filePath: string): string {
@@ -165,8 +183,8 @@ async function beginBatch(
   await tx.execute(
     `INSERT INTO import_batches
       (id, source_type, source_identifier, content_hash, importer_version, schema_version, status)
-     VALUES ($1, $2, $3, $4, $5, 2, 'started')`,
-    [id, sourceType, sourceIdentifier, contentHash, `persistence-import/1;names=${NAME_CANONICALIZATION_VERSION}`],
+      VALUES ($1, $2, $3, $4, $5, 4, 'started')`,
+    [id, sourceType, sourceIdentifier, contentHash, `persistence-import/2;names=${NAME_CANONICALIZATION_VERSION}`],
   );
   return id;
 }
@@ -402,8 +420,26 @@ async function getOrCreateQuarantineOwner(tx: Queryable, namespace: string): Pro
   return existing[0].id;
 }
 
-export async function importLegacyPostgres(db: PostgresDatabase, apply: boolean): Promise<LegacyImportSummary> {
+async function getOrCreateUserOwner(tx: Queryable, userId: number): Promise<string | null> {
+  const found=await tx.query<{id:string}>(`SELECT id::text FROM data_owners WHERE user_id=$1 AND status='active'`,[userId]);
+  if(found[0])return found[0].id;
+  const user=await tx.query<{id:number}>('SELECT id FROM users WHERE id=$1',[userId]);
+  if(!user[0])return null;
+  const inserted=await tx.query<{id:string}>(
+    `INSERT INTO data_owners (id,user_id,status) VALUES ($1,$2,'active')
+     ON CONFLICT (user_id) WHERE user_id IS NOT NULL DO UPDATE SET user_id=EXCLUDED.user_id RETURNING id::text`,
+    [randomUUID(),userId],
+  );
+  return inserted[0]?.id??null;
+}
+
+export async function importLegacyPostgres(
+  db: PostgresDatabase,
+  apply: boolean,
+  batchSize = DEFAULT_POSTGRES_IMPORT_BATCH_SIZE,
+): Promise<LegacyImportSummary> {
   const label = 'legacy-postgres:public';
+  if(!Number.isSafeInteger(batchSize)||batchSize<1||batchSize>MAX_POSTGRES_IMPORT_BATCH_SIZE)throw new RangeError('PostgreSQL import batch size is outside the supported bound');
   const countRows = await db.query<{ entity: string; count: string }>(`
     SELECT 'users' AS entity, count(*)::text AS count FROM users
     UNION ALL SELECT 'players', count(*)::text FROM players
@@ -411,70 +447,89 @@ export async function importLegacyPostgres(db: PostgresDatabase, apply: boolean)
     UNION ALL SELECT 'matches', count(*)::text FROM matches
   `);
   const counts = Object.fromEntries(countRows.map(row => [row.entity, Number(row.count)]));
-  const sourceRowCount = Object.values(counts).reduce((sum, count) => sum + count, 0);
-  if (sourceRowCount > MAX_POSTGRES_IMPORT_RECORDS_PER_BATCH) {
-    return {
-      source: 'legacy_postgres', sourceLabel: label, dryRun: !apply, counts,
-      quarantined: 0, needsReview: 0, noOp: apply,
-      warnings: ['source_requires_checkpointed_import_before_apply'],
-    };
-  }
-  const [users, players, tournaments, matches] = await Promise.all([
-    db.query<LegacyUser>('SELECT id, username FROM users ORDER BY id'),
-    db.query<LegacyPlayer>(`SELECT id, user_id, guest_session_id, name, games_played, wins, losses, draws,
-      points_for, points_against FROM players ORDER BY id`),
-    db.query<LegacyTournament>('SELECT id, user_id, guest_session_id FROM tournaments ORDER BY id'),
-    db.query<LegacyMatch>('SELECT id, tournament_id, user_id, guest_session_id, teams, start_time, end_time FROM matches ORDER BY id'),
-  ]);
-  const batchHash = digest(JSON.stringify({
-    users: users.map(row => hashRecord(row).toString('hex')),
-    players: players.map(row => hashRecord(row).toString('hex')),
-    tournaments: tournaments.map(row => hashRecord(row).toString('hex')),
-    matches: matches.map(row => hashRecord(row).toString('hex')),
-  }));
+  const maxRows=await db.query<{users:number;players:number;tournaments:number;matches:number}>(
+    `SELECT (SELECT coalesce(max(id),0) FROM users)::integer users,
+      (SELECT coalesce(max(id),0) FROM players)::integer players,
+      (SELECT coalesce(max(id),0) FROM tournaments)::integer tournaments,
+      (SELECT coalesce(max(id),0) FROM matches)::integer matches`,
+  );
+  let highWater={users:Number(maxRows[0]?.users??0),players:Number(maxRows[0]?.players??0),
+    tournaments:Number(maxRows[0]?.tournaments??0),matches:Number(maxRows[0]?.matches??0)};
+  let scanCounts:Record<string,number>=counts;
+  let sourceSignature=postgresSourceSignature(scanCounts,highWater);
   if (!apply) {
-    const tournamentById = new Map(tournaments.map(row => [row.id, row]));
-    const quarantineCount = players.filter(row => !validLegacyOwner(row.user_id, row.guest_session_id)).length
-      + tournaments.filter(row => !validLegacyOwner(row.user_id, row.guest_session_id)).length
-      + matches.filter(row => {
-        const tournament = row.tournament_id === null ? undefined : tournamentById.get(row.tournament_id);
-        return !tournament || row.user_id !== tournament.user_id || row.guest_session_id !== tournament.guest_session_id
-          || !validLegacyOwner(tournament.user_id, tournament.guest_session_id);
-      }).length;
+    const quarantineRows=await db.query<{quarantined:number}>(`
+      SELECT
+        (SELECT count(*) FROM players p WHERE p.user_id IS NULL OR p.guest_session_id IS NOT NULL) +
+        (SELECT count(*) FROM tournaments t WHERE t.user_id IS NULL OR t.guest_session_id IS NOT NULL) +
+        (SELECT count(*) FROM matches m LEFT JOIN tournaments t ON t.id=m.tournament_id
+         WHERE t.id IS NULL OR m.user_id IS DISTINCT FROM t.user_id OR m.guest_session_id IS DISTINCT FROM t.guest_session_id
+           OR t.user_id IS NULL OR t.guest_session_id IS NOT NULL) AS quarantined`);
     return {
       source: 'legacy_postgres', sourceLabel: label, dryRun: true, counts,
-      quarantined: quarantineCount, needsReview: 0, noOp: false,
-      warnings: ['legacy_guest_cookie_values_are_not_activated', 'source_rows_are_preserved'],
+      highWater,
+      quarantined: Number(quarantineRows[0]?.quarantined??0), needsReview: 0, noOp: false,
+      warnings: ['dry_run_no_writes', 'legacy_guest_cookie_values_are_not_activated', 'source_rows_are_preserved',
+        'postgres_apply_uses_checkpointed_batches'],
     };
   }
 
   return db.transaction(async tx => {
     await tx.query('SELECT pg_advisory_xact_lock($1)', [7281946302]);
-    const prior = await findPriorBatch(tx, 'legacy_postgres', label, batchHash);
-    if (prior) {
-      const priorCounts = prior.counts;
-      return {
-        source: 'legacy_postgres', sourceLabel: label, dryRun: false, batchId: prior.id,
-        counts, quarantined: Number(priorCounts.quarantined || 0), needsReview: Number(priorCounts.needsReview || 0),
-        noOp: true, warnings: ['identical_source_already_recorded', ...(prior.status === 'needs_review' ? ['review_required'] : [])],
-      };
+    const active=await tx.query<{id:string;content_hash:Buffer;counts:Record<string,unknown>}>(
+      `SELECT id::text,content_hash,counts FROM import_batches
+       WHERE source_type='legacy_postgres' AND source_identifier=$1 AND status='started'
+       ORDER BY started_at DESC LIMIT 1 FOR UPDATE`,[label],
+    );
+    let batchId:string;let checkpoint:{users:number;players:number;tournaments:number;matches:number};
+    let cumulativeQuarantined=0;let cumulativeReview=0;let savedCounts:Record<string,unknown>;
+    if(active[0]){
+      batchId=active[0].id;savedCounts=active[0].counts;
+      const savedCursor=objectValue(savedCounts.cursor);
+      const savedHigh=objectValue(savedCounts.highWater);
+      scanCounts=Object.fromEntries(Object.entries(objectValue(savedCounts.sourceCounts)).map(([key,value])=>[key,safeInteger(value)]));
+      highWater={users:safeInteger(savedHigh.users),players:safeInteger(savedHigh.players),tournaments:safeInteger(savedHigh.tournaments),matches:safeInteger(savedHigh.matches)};
+      sourceSignature=postgresSourceSignature(scanCounts,highWater);
+      if(!Buffer.from(active[0].content_hash).equals(sourceSignature))throw new Error('Legacy import checkpoint checksum is invalid; refusing to resume.');
+      checkpoint={users:safeInteger(savedCursor.users),players:safeInteger(savedCursor.players),tournaments:safeInteger(savedCursor.tournaments),matches:safeInteger(savedCursor.matches)};
+      cumulativeQuarantined=safeInteger(savedCounts.quarantined);cumulativeReview=safeInteger(savedCounts.needsReview);
+    }else{
+      batchId=await beginBatch(tx,'legacy_postgres',label,sourceSignature);
+      checkpoint={users:0,players:0,tournaments:0,matches:0};
+      savedCounts={highWater,sourceCounts:counts,cursor:checkpoint,quarantined:0,needsReview:0};
+      await tx.execute('UPDATE import_batches SET counts=$2::jsonb WHERE id=$1',[batchId,JSON.stringify(savedCounts)]);
     }
-    const batchId = await beginBatch(tx, 'legacy_postgres', label, batchHash);
+    const selectPage=async <T extends QueryResultRow>(sql:string,cursor:number,maximum:number):Promise<T[]>=>
+      tx.query<T>(sql,[cursor,maximum,batchSize]);
+    const [users,players,tournaments]=await Promise.all([
+      selectPage<LegacyUser>('SELECT id,username FROM users WHERE id>$1 AND id<=$2 ORDER BY id LIMIT $3',checkpoint.users,highWater.users),
+      selectPage<LegacyPlayer>(`SELECT id,user_id,guest_session_id,name,games_played,wins,losses,draws,points_for,points_against
+        FROM players WHERE id>$1 AND id<=$2 ORDER BY id LIMIT $3`,checkpoint.players,highWater.players),
+      selectPage<LegacyTournament>('SELECT id,user_id,guest_session_id FROM tournaments WHERE id>$1 AND id<=$2 ORDER BY id LIMIT $3',checkpoint.tournaments,highWater.tournaments),
+    ]);
+    const pageCursor=(current:number,rows:Array<{id:number}>,high:number)=>rows.length?rows[rows.length-1]!.id:high;
+    const nextCheckpoint={
+      users:pageCursor(checkpoint.users,users,highWater.users),
+      players:pageCursor(checkpoint.players,players,highWater.players),
+      tournaments:pageCursor(checkpoint.tournaments,tournaments,highWater.tournaments),
+      matches:checkpoint.matches,
+    };
+    const dependenciesComplete=nextCheckpoint.users>=highWater.users&&nextCheckpoint.players>=highWater.players&&nextCheckpoint.tournaments>=highWater.tournaments;
+    const matches=dependenciesComplete?await selectPage<LegacyMatch>(
+      'SELECT id,tournament_id,user_id,guest_session_id,teams,start_time,end_time FROM matches WHERE id>$1 AND id<=$2 ORDER BY id LIMIT $3',
+      checkpoint.matches,highWater.matches,
+    ):[];
+    if(dependenciesComplete)nextCheckpoint.matches=pageCursor(checkpoint.matches,matches,highWater.matches);
+    const complete=nextCheckpoint.users>=highWater.users&&nextCheckpoint.players>=highWater.players
+      &&nextCheckpoint.tournaments>=highWater.tournaments&&nextCheckpoint.matches>=highWater.matches;
     const ownerByUser = new Map<number, string>();
     const keyCounts = new Map<string, number>();
     for (const user of users) {
       const key = canonicalizeName(user.username);
       keyCounts.set(key, (keyCounts.get(key) || 0) + 1);
-      const ownerRows = await tx.query<{ id: string }>(
-        `INSERT INTO data_owners (id, user_id, status)
-         VALUES ($1, $2, 'active')
-         ON CONFLICT (user_id) WHERE user_id IS NOT NULL
-         DO UPDATE SET user_id = EXCLUDED.user_id
-         RETURNING id`, [randomUUID(), user.id],
-      );
-      const owner = ownerRows[0];
-      if (!owner) throw new Error('Could not establish an account owner');
-      ownerByUser.set(user.id, owner.id);
+      const ownerId=await getOrCreateUserOwner(tx,user.id);
+      if(!ownerId)throw new Error('Could not establish an account owner');
+      ownerByUser.set(user.id,ownerId);
     }
 
     let quarantined = 0;
@@ -483,7 +538,8 @@ export async function importLegacyPostgres(db: PostgresDatabase, apply: boolean)
       const rowHash = hashRecord(user);
       const sourceState = await sourceRecordState(tx, 'legacy-postgres', 'users', String(user.id), rowHash);
       const usernameKey = canonicalizeName(user.username);
-      const collision = keyCounts.get(usernameKey) !== 1 || !usernameKey;
+      const existingKey=await tx.query<{id:number}>(`SELECT id FROM users WHERE username_key=$1 AND id<>$2 LIMIT 1`,[usernameKey,user.id]);
+      const collision = keyCounts.get(usernameKey) !== 1 || existingKey.length>0 || !usernameKey;
       if (!collision && !sourceState.changed && !sourceState.unresolved) {
         await tx.execute(
           'UPDATE users SET username_key = $1, username_key_version = $2 WHERE id = $3 AND username_key IS NULL',
@@ -505,10 +561,13 @@ export async function importLegacyPostgres(db: PostgresDatabase, apply: boolean)
       );
     }
 
-    const playerOwner = new Map<number, string>();
-    const assignedPlayers = players.map(row => ({ row, ownerId: validLegacyOwner(row.user_id, row.guest_session_id)
-      ? ownerByUser.get(row.user_id as number) || null
-      : null }));
+    const assignedPlayers:Array<{row:LegacyPlayer;ownerId:string|null}> = [];
+    for(const row of players){
+      const ownerId=validLegacyOwner(row.user_id,row.guest_session_id)
+        ? ownerByUser.get(row.user_id as number)??await getOrCreateUserOwner(tx,row.user_id as number)
+        : null;
+      assignedPlayers.push({row,ownerId});
+    }
     for (const item of assignedPlayers) {
       if (!item.ownerId) {
         item.ownerId = await getOrCreateQuarantineOwner(tx, guestNamespace(item.row.guest_session_id));
@@ -528,12 +587,15 @@ export async function importLegacyPostgres(db: PostgresDatabase, apply: boolean)
       const rowHash = hashRecord(item.row);
       const sourceState = await sourceRecordState(tx, 'legacy-postgres', 'players', String(item.row.id), rowHash);
       const nameKey = canonicalizeName(item.row.name || '');
-      const collision = !nameKey || (namesByOwner.get(item.ownerId)?.get(nameKey) ?? 0) > 1;
+      const existingName=await tx.query<{id:number}>(
+        `SELECT id FROM players WHERE owner_id=$1 AND name_key=$2 AND id<>$3 AND deleted_at IS NULL LIMIT 1`,
+        [item.ownerId,nameKey,item.row.id],
+      );
+      const collision = !nameKey || (namesByOwner.get(item.ownerId)?.get(nameKey) ?? 0) > 1 || existingName.length>0;
       const invalidStats = [item.row.games_played, item.row.wins, item.row.losses, item.row.draws,
         item.row.points_for, item.row.points_against].some(value => value !== null && value !== undefined && value < 0);
       if (collision || invalidStats || sourceState.changed || sourceState.unresolved) needsReview += 1;
       if (!invalidStats && !sourceState.changed && !sourceState.unresolved) {
-        playerOwner.set(item.row.id, item.ownerId);
         await tx.execute(
           `UPDATE players SET owner_id = $1, name_key = $2, name_key_version = $3,
              import_batch_id = $4, updated_at = now()
@@ -542,7 +604,7 @@ export async function importLegacyPostgres(db: PostgresDatabase, apply: boolean)
         );
       }
       const activeOwner = validLegacyOwner(item.row.user_id, item.row.guest_session_id)
-        && ownerByUser.has(item.row.user_id as number);
+        && item.ownerId !== null;
       const status = collision || invalidStats || sourceState.changed || sourceState.unresolved
         ? 'needs_review' : activeOwner ? 'imported' : 'quarantined';
       await appendImportRecord(tx, batchId, 'legacy-postgres', 'players', String(item.row.id), rowHash, status,
@@ -556,20 +618,21 @@ export async function importLegacyPostgres(db: PostgresDatabase, apply: boolean)
         'players', String(item.row.id));
     }
 
-    const tournamentOwner = new Map<number, string>();
     for (const row of tournaments) {
       const rowHash = hashRecord(row);
       const sourceState = await sourceRecordState(tx, 'legacy-postgres', 'tournaments', String(row.id), rowHash);
-      let ownerId = validLegacyOwner(row.user_id, row.guest_session_id) ? ownerByUser.get(row.user_id as number) || null : null;
+      const userOwnerId=validLegacyOwner(row.user_id,row.guest_session_id)
+        ? ownerByUser.get(row.user_id as number) ?? await getOrCreateUserOwner(tx,row.user_id as number)
+        : null;
+      let ownerId=userOwnerId;
       if (!ownerId) {
         ownerId = await getOrCreateQuarantineOwner(tx, guestNamespace(row.guest_session_id));
         quarantined += 1;
       }
-      tournamentOwner.set(row.id, ownerId);
       if (!sourceState.changed && !sourceState.unresolved) {
         await tx.execute('UPDATE tournaments SET owner_id = $1, import_batch_id = $2 WHERE id = $3 AND owner_id IS NULL', [ownerId, batchId, row.id]);
       }
-      const validOwner = row.user_id !== null && ownerByUser.has(row.user_id) && row.guest_session_id === null;
+      const validOwner = validLegacyOwner(row.user_id,row.guest_session_id)&&userOwnerId!==null;
       const review = sourceState.changed || sourceState.unresolved;
       if (review) needsReview += 1;
       await appendImportRecord(tx, batchId, 'legacy-postgres', 'tournaments', String(row.id), rowHash,
@@ -585,8 +648,17 @@ export async function importLegacyPostgres(db: PostgresDatabase, apply: boolean)
     for (const row of matches) {
       const rowHash = hashRecord(row);
       const sourceState = await sourceRecordState(tx, 'legacy-postgres', 'matches', String(row.id), rowHash);
-      const ownerId = row.tournament_id === null ? null : tournamentOwner.get(row.tournament_id) || null;
-      const sourceTournament = tournaments.find(tournament => tournament.id === row.tournament_id);
+      const tournamentRows=row.tournament_id===null?[]:await tx.query<LegacyTournament & {owner_id:string|null}>(
+        `SELECT id,user_id,guest_session_id,owner_id::text FROM tournaments WHERE id=$1`,[row.tournament_id],
+      );
+      const sourceTournament=tournamentRows[0];
+      let ownerId=sourceTournament?.owner_id??null;
+      if(sourceTournament&&!ownerId){
+        ownerId=validLegacyOwner(sourceTournament.user_id,sourceTournament.guest_session_id)
+          ? await getOrCreateUserOwner(tx,sourceTournament.user_id as number)
+          : await getOrCreateQuarantineOwner(tx,guestNamespace(sourceTournament.guest_session_id));
+        if(ownerId)await tx.execute('UPDATE tournaments SET owner_id=$1 WHERE id=$2 AND owner_id IS NULL',[ownerId,sourceTournament.id]);
+      }
       const canInherit = ownerId !== null && sourceTournament !== undefined
         && row.user_id === sourceTournament.user_id
         && row.guest_session_id === sourceTournament.guest_session_id;
@@ -623,7 +695,10 @@ export async function importLegacyPostgres(db: PostgresDatabase, apply: boolean)
           for (let position = 0; position < side.participants.length; position += 1) {
             const participant = side.participants[position]!;
             const playerId = legacyPlayerId(participant.id);
-            const linkedPlayerId = playerId !== null && playerOwner.get(playerId) === ownerId ? playerId : null;
+            const playerRows=playerId===null?[]:await tx.query<{owner_id:string|null}>(
+              `SELECT owner_id::text FROM players WHERE id=$1`,[playerId],
+            );
+            const linkedPlayerId = playerId !== null && playerRows[0]?.owner_id===ownerId ? playerId : null;
             if (playerId !== null && linkedPlayerId === null) warnings.push('participant_reference_unverified');
             const enrollmentId = linkedPlayerId === null ? null : await findOrCreateEnrollment(
               tx, row.tournament_id, ownerId, linkedPlayerId, participant.name as string,
@@ -644,24 +719,29 @@ export async function importLegacyPostgres(db: PostgresDatabase, apply: boolean)
         );
         if (warnings.includes('participant_reference_unverified')) needsReview += 1;
       }
-      const tournamentIsAccountOwned = sourceTournament !== undefined
-        && validLegacyOwner(sourceTournament.user_id, sourceTournament.guest_session_id)
-        && ownerByUser.has(sourceTournament.user_id as number);
+      const ownerStatus=ownerId?await tx.query<{status:string}>('SELECT status FROM data_owners WHERE id=$1',[ownerId]):[];
+      const tournamentIsAccountOwned=ownerStatus[0]?.status==='active'&&sourceTournament!==undefined
+        &&validLegacyOwner(sourceTournament.user_id,sourceTournament.guest_session_id);
+      if(!tournamentIsAccountOwned)quarantined+=1;
       await appendImportRecord(tx, batchId, 'legacy-postgres', 'matches', String(row.id), rowHash,
         warnings.length > 0 ? 'needs_review' : tournamentIsAccountOwned ? 'imported' : 'quarantined',
         warnings, 'matches', String(row.id));
     }
 
+    const totalQuarantined=cumulativeQuarantined+quarantined;
+    const totalReview=cumulativeReview+needsReview;
+    const progressCounts={sourceCounts:scanCounts,highWater,cursor:nextCheckpoint,quarantined:totalQuarantined,needsReview:totalReview};
+    const nextStatus=complete?(totalReview?'needs_review':'completed'):'started';
     await tx.execute(
-      `UPDATE import_batches SET status = $2, completed_at = now(),
-       counts = $3::jsonb, error_summary = $4 WHERE id = $1`,
-      [batchId, needsReview ? 'needs_review' : 'completed', JSON.stringify({ ...counts, quarantined, needsReview }),
-        needsReview ? 'review_required' : null],
+      `UPDATE import_batches SET status=$2,completed_at=CASE WHEN $3 THEN now() ELSE NULL END,
+       counts=$4::jsonb,error_summary=$5 WHERE id=$1`,
+      [batchId,nextStatus,complete,JSON.stringify(progressCounts),complete&&totalReview?'review_required':null],
     );
     return {
       source: 'legacy_postgres', sourceLabel: label, dryRun: false, batchId,
-      counts, quarantined, needsReview, noOp: false,
-      warnings: ['legacy_guest_cookie_values_are_not_activated', 'legacy_json_snapshots_are_preserved'],
+      counts:scanCounts,checkpoint:nextCheckpoint,highWater,quarantined:totalQuarantined,needsReview:totalReview,noOp:false,
+      warnings: ['legacy_guest_cookie_values_are_not_activated', 'legacy_json_snapshots_are_preserved',
+        ...(complete?[]:['checkpointed_batch_incomplete; rerun --apply to resume']),...(complete&&totalReview?['review_required']:[])],
     };
   });
 }

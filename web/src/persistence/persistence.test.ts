@@ -8,16 +8,25 @@ import { canonicalizeName, NAME_CANONICALIZATION_VERSION } from '../domain/names
 import { readMigrations } from './migrations';
 import { Queryable } from './database';
 import { consumeRateLimitBucket, pruneExpiredRateLimitBuckets } from './rate-limit';
+import { createPostgresApiStore } from './api-store';
+import { DEFAULT_POSTGRES_IMPORT_BATCH_SIZE, MAX_POSTGRES_IMPORT_BATCH_SIZE } from './legacy-import';
 
 export async function runPersistenceUnitTests(): Promise<void> {
   assert.strictEqual(canonicalizeName('  Straße\tTEAM  '), 'strasse team');
   assert.strictEqual(canonicalizeName('Σ ς'), 'σ σ');
   assert.notStrictEqual(canonicalizeName('I'), canonicalizeName('ı'));
+  assert.strictEqual(DEFAULT_POSTGRES_IMPORT_BATCH_SIZE,250);
+  assert.strictEqual(MAX_POSTGRES_IMPORT_BATCH_SIZE,1_000);
   assert.strictEqual(NAME_CANONICALIZATION_VERSION, 'nfkc-casefold-whitespace-v1');
 
   assert.throws(() => postgresPoolConfig({ NODE_ENV: 'production', POSTGRES_URL: 'postgres://a:b@host/db' }), /sslmode/);
   assert.throws(() => postgresPoolConfig({ POSTGRES_URL: 'postgres://a:b@host/db', VERCEL: '1', DB_POOL_MAX: '6' }), /between 1 and 5/);
   assert.strictEqual(postgresPoolConfig({ POSTGRES_URL: 'postgres://a:b@host/db', VERCEL: '1' }).max, 2);
+  const apiStore=createPostgresApiStore({POSTGRES_URL:'postgres://user:pass@localhost/tournament_test',NODE_ENV:'test'} as NodeJS.ProcessEnv);
+  assert.strictEqual(typeof apiStore.execute,'function');
+  assert.strictEqual(typeof apiStore.lookupSessionByTokenHash,'function');
+  assert.strictEqual(typeof apiStore.consumeRateLimit,'function');
+  await (apiStore as typeof apiStore & {close():Promise<void>}).close();
   assert.throws(() => assertLocalJsonModeAllowed({ DB_MODE: 'local', NODE_ENV: 'production', LOCAL_JSON_MODE: 'single-process' }), /disabled in production/);
   assert.throws(() => assertLocalJsonModeAllowed({ DB_MODE: 'local', VERCEL: '1', LOCAL_JSON_MODE: 'single-process' }), /serverless/);
   assert.throws(() => assertLocalJsonModeAllowed({ DB_MODE: 'local', NODE_ENV: 'development' }), /explicitly enable/);
@@ -65,7 +74,7 @@ export async function runPersistenceUnitTests(): Promise<void> {
 
     const migrationsDir = path.resolve(__dirname, '../../db/migrations');
     const migrations = await readMigrations(migrationsDir);
-    assert.deepStrictEqual(migrations.map(migration => migration.version), [1, 2, 3]);
+    assert.deepStrictEqual(migrations.map(migration => migration.version), [1, 2, 3, 4]);
     assert.ok(migrations.every(migration => /^[a-f0-9]{64}$/.test(migration.checksum)));
     assert.ok(migrations[2]!.sql.includes('CREATE TABLE rate_limit_buckets'));
     assert.ok(migrations.every(migration => !/CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS/i.test(migration.sql)));

@@ -129,7 +129,8 @@ CREATE UNIQUE INDEX matches_id_tournament_owner_unique ON matches (id, tournamen
 CREATE UNIQUE INDEX matches_tournament_idempotency_unique ON matches (tournament_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
 CREATE INDEX matches_owner_tournament_sequence_idx ON matches (owner_id, tournament_id, sequence_no);
 ALTER TABLE matches ADD CONSTRAINT matches_owner_matches_tournament_fk
-  FOREIGN KEY (tournament_id, owner_id) REFERENCES tournaments(id, owner_id) ON DELETE RESTRICT NOT VALID;
+  FOREIGN KEY (tournament_id, owner_id) REFERENCES tournaments(id, owner_id)
+  ON DELETE RESTRICT ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED NOT VALID;
 
 CREATE TABLE teams (
   id UUID PRIMARY KEY,
@@ -154,8 +155,10 @@ CREATE TABLE team_members (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (team_id, player_id),
   UNIQUE (team_id, position),
-  FOREIGN KEY (team_id, owner_id) REFERENCES teams(id, owner_id) ON DELETE CASCADE,
-  FOREIGN KEY (player_id, owner_id) REFERENCES players(id, owner_id) ON DELETE RESTRICT
+  FOREIGN KEY (team_id, owner_id) REFERENCES teams(id, owner_id)
+    ON DELETE CASCADE ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY (player_id, owner_id) REFERENCES players(id, owner_id)
+    ON DELETE RESTRICT ON UPDATE NO ACTION DEFERRABLE INITIALLY DEFERRED
 );
 CREATE INDEX team_members_player_idx ON team_members (player_id);
 
@@ -201,8 +204,10 @@ CREATE TABLE tournament_enrollments (
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   UNIQUE (id, tournament_id, owner_id),
   UNIQUE (id, tournament_id, owner_id, player_id),
-  FOREIGN KEY (tournament_id, owner_id) REFERENCES tournaments(id, owner_id) ON DELETE RESTRICT,
-  FOREIGN KEY (player_id, owner_id) REFERENCES players(id, owner_id) ON DELETE RESTRICT
+  FOREIGN KEY (tournament_id, owner_id) REFERENCES tournaments(id, owner_id)
+    ON DELETE RESTRICT ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY (player_id, owner_id) REFERENCES players(id, owner_id)
+    ON DELETE RESTRICT ON UPDATE NO ACTION DEFERRABLE INITIALLY DEFERRED
 );
 CREATE UNIQUE INDEX tournament_enrollments_player_unique ON tournament_enrollments (tournament_id, player_id)
   WHERE player_id IS NOT NULL;
@@ -215,12 +220,17 @@ CREATE TABLE tournament_schedule_events (
   owner_id UUID NOT NULL,
   sequence_no INTEGER NOT NULL CHECK (sequence_no > 0),
   event_type TEXT NOT NULL CHECK (event_type IN ('bye', 'rest')),
+  subject_type TEXT NOT NULL CHECK (subject_type IN ('player', 'fixed_team')),
+  subject_id TEXT NOT NULL,
+  round_no INTEGER NOT NULL CHECK (round_no > 0),
   enrollment_id UUID,
   player_name_snapshot TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (tournament_id, sequence_no, enrollment_id),
-  FOREIGN KEY (tournament_id, owner_id) REFERENCES tournaments(id, owner_id) ON DELETE RESTRICT,
-  FOREIGN KEY (enrollment_id, tournament_id, owner_id) REFERENCES tournament_enrollments(id, tournament_id, owner_id) ON DELETE RESTRICT
+  UNIQUE (tournament_id, sequence_no, event_type, subject_type, subject_id),
+  FOREIGN KEY (tournament_id, owner_id) REFERENCES tournaments(id, owner_id)
+    ON DELETE RESTRICT ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY (enrollment_id, tournament_id, owner_id) REFERENCES tournament_enrollments(id, tournament_id, owner_id)
+    ON DELETE RESTRICT ON UPDATE NO ACTION DEFERRABLE INITIALLY DEFERRED
 );
 CREATE INDEX tournament_schedule_events_owner_idx ON tournament_schedule_events (owner_id, tournament_id, sequence_no);
 
@@ -234,8 +244,10 @@ CREATE TABLE fixed_team_entries (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (id, tournament_id, owner_id),
   UNIQUE (tournament_id, entry_number),
-  FOREIGN KEY (tournament_id, owner_id) REFERENCES tournaments(id, owner_id) ON DELETE RESTRICT,
-  FOREIGN KEY (team_id, owner_id) REFERENCES teams(id, owner_id) ON DELETE RESTRICT
+  FOREIGN KEY (tournament_id, owner_id) REFERENCES tournaments(id, owner_id)
+    ON DELETE RESTRICT ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY (team_id, owner_id) REFERENCES teams(id, owner_id)
+    ON DELETE RESTRICT ON UPDATE NO ACTION DEFERRABLE INITIALLY DEFERRED
 );
 CREATE UNIQUE INDEX fixed_team_entries_team_unique ON fixed_team_entries (tournament_id, team_id) WHERE team_id IS NOT NULL;
 CREATE INDEX fixed_team_entries_team_owner_idx ON fixed_team_entries (team_id, owner_id) WHERE team_id IS NOT NULL;
@@ -251,12 +263,16 @@ CREATE TABLE fixed_team_entry_members (
   PRIMARY KEY (fixed_team_entry_id, position),
   UNIQUE (fixed_team_entry_id, player_id),
   FOREIGN KEY (fixed_team_entry_id, tournament_id, owner_id)
-    REFERENCES fixed_team_entries(id, tournament_id, owner_id) ON DELETE CASCADE,
-  FOREIGN KEY (player_id, owner_id) REFERENCES players(id, owner_id) ON DELETE RESTRICT,
+    REFERENCES fixed_team_entries(id, tournament_id, owner_id)
+    ON DELETE CASCADE ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY (player_id, owner_id) REFERENCES players(id, owner_id)
+    ON DELETE RESTRICT ON UPDATE NO ACTION DEFERRABLE INITIALLY DEFERRED,
   FOREIGN KEY (enrollment_id, tournament_id, owner_id)
-    REFERENCES tournament_enrollments(id, tournament_id, owner_id) ON DELETE RESTRICT,
+    REFERENCES tournament_enrollments(id, tournament_id, owner_id)
+    ON DELETE RESTRICT ON UPDATE NO ACTION DEFERRABLE INITIALLY DEFERRED,
   FOREIGN KEY (enrollment_id, tournament_id, owner_id, player_id)
-    REFERENCES tournament_enrollments(id, tournament_id, owner_id, player_id) ON DELETE RESTRICT
+    REFERENCES tournament_enrollments(id, tournament_id, owner_id, player_id)
+    ON DELETE RESTRICT ON UPDATE NO ACTION DEFERRABLE INITIALLY DEFERRED
 );
 CREATE UNIQUE INDEX fixed_team_entry_player_once ON fixed_team_entry_members (tournament_id, player_id) WHERE player_id IS NOT NULL;
 
@@ -299,7 +315,8 @@ CREATE TABLE match_sides (
   side_label TEXT,
   PRIMARY KEY (match_id, side_no),
   UNIQUE (match_id, side_no, tournament_id, owner_id),
-  FOREIGN KEY (match_id, tournament_id, owner_id) REFERENCES matches(id, tournament_id, owner_id) ON DELETE CASCADE
+  FOREIGN KEY (match_id, tournament_id, owner_id) REFERENCES matches(id, tournament_id, owner_id)
+    ON DELETE CASCADE ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED
 );
 CREATE INDEX match_sides_tournament_idx ON match_sides (tournament_id, match_id);
 CREATE INDEX match_sides_owner_idx ON match_sides (owner_id, tournament_id);
@@ -315,11 +332,15 @@ CREATE TABLE match_players (
   player_name_snapshot TEXT NOT NULL,
   PRIMARY KEY (match_id, side_no, position),
   UNIQUE (match_id, player_id),
-  FOREIGN KEY (match_id, side_no, tournament_id, owner_id) REFERENCES match_sides(match_id, side_no, tournament_id, owner_id) ON DELETE CASCADE,
-  FOREIGN KEY (player_id, owner_id) REFERENCES players(id, owner_id) ON DELETE RESTRICT,
-  FOREIGN KEY (enrollment_id, tournament_id, owner_id) REFERENCES tournament_enrollments(id, tournament_id, owner_id) ON DELETE RESTRICT,
+  FOREIGN KEY (match_id, side_no, tournament_id, owner_id) REFERENCES match_sides(match_id, side_no, tournament_id, owner_id)
+    ON DELETE CASCADE ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY (player_id, owner_id) REFERENCES players(id, owner_id)
+    ON DELETE RESTRICT ON UPDATE NO ACTION DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY (enrollment_id, tournament_id, owner_id) REFERENCES tournament_enrollments(id, tournament_id, owner_id)
+    ON DELETE RESTRICT ON UPDATE NO ACTION DEFERRABLE INITIALLY DEFERRED,
   FOREIGN KEY (enrollment_id, tournament_id, owner_id, player_id)
-    REFERENCES tournament_enrollments(id, tournament_id, owner_id, player_id) ON DELETE RESTRICT
+    REFERENCES tournament_enrollments(id, tournament_id, owner_id, player_id)
+    ON DELETE RESTRICT ON UPDATE NO ACTION DEFERRABLE INITIALLY DEFERRED
 );
 CREATE INDEX match_players_tournament_idx ON match_players (tournament_id, match_id, side_no, position);
 CREATE INDEX match_players_player_idx ON match_players (player_id);
