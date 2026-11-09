@@ -23,7 +23,7 @@
     "test:e2e": "playwright test --config=playwright.config.ts",
     "test": "npm run test:unit && npm run test:integration && npm run test:security && npm run test:e2e",
     "contract:check": "redocly lint docs/api/openapi.yaml",
-    "lint": "eslint web/src/app.ts web/src/server.ts web/src/api web/src/auth web/src/config web/src/domain web/src/services frontend/src frontend/tests packages/contracts/src tests/security"
+    "lint": "eslint web/src/app.ts web/src/server.ts web/src/api web/src/auth web/src/config web/src/domain web/src/persistence web/src/services frontend/src frontend/tests packages/contracts/src tests"
   },
   "devDependencies": {
     "@playwright/test": "^1.52.0",

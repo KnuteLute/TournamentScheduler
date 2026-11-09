@@ -59,8 +59,8 @@ function lazyPostgresStore(): ApiStore {
     execute: <T = unknown>(request: StoreRequest): Promise<StoreResult<T>> =>
       getStore().execute<T>(request),
     healthCheck: async (): Promise<boolean> => {
-      const healthCheck = getStore().healthCheck;
-      return healthCheck ? healthCheck() : false;
+      const store = getStore();
+      return store.healthCheck ? store.healthCheck() : false;
     },
   };
 }
