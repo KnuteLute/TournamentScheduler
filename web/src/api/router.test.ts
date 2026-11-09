@@ -82,15 +82,30 @@ function mockStore(options: { session?: SessionRecord; allowRate?: boolean; valu
 }
 
 test("health is read-only and protected resources reject missing sessions", async () => {
-	const { store, operations } = mockStore();
+	const { store, operations, rateRequests } = mockStore();
 	await withApi(store, async (port) => {
 		const live = await send(port, "GET", "/api/v1/health/live");
 		assert.equal(live.status, 200);
+		assert.equal(rateRequests.length, 0);
 		const ready = await send(port, "GET", "/api/v1/health/ready");
 		assert.equal(ready.status, 200);
+		assert.equal(rateRequests.length, 1);
 		const players = await send(port, "GET", "/api/v1/players");
 		assert.equal(players.status, 401);
 		assert.equal(operations.length, 0);
+	});
+});
+
+test("liveness bypasses rate limits while readiness is rate limited", async () => {
+	const { store, rateRequests } = mockStore({ allowRate: false });
+	await withApi(store, async (port) => {
+		const live = await send(port, "GET", "/api/v1/health/live");
+		assert.equal(live.status, 200);
+		assert.equal(rateRequests.length, 0);
+		const ready = await send(port, "GET", "/api/v1/health/ready");
+		assert.equal(ready.status, 429);
+		assert.equal(ready.headers["retry-after"], "30");
+		assert.equal(rateRequests.length, 1);
 	});
 });
 

@@ -254,7 +254,7 @@ function rateLimitClientAddress(req: Request, trustedProxyHops: number): string 
 
 function addRateLimit(router: Router, store: ApiStore, config: ApiConfig): void {
 	router.use((req, res, next) => {
-		if (req.path === "/health/live" || req.path === "/health/ready") {
+		if (req.path === "/health/live") {
 			next();
 			return;
 		}
