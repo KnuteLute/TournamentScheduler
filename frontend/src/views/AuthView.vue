@@ -2,7 +2,6 @@
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
-import type { TransferSummary } from '@/api/types'
 import { errorMessage } from '@/lib/errors'
 
 const session = useSessionStore()
@@ -12,33 +11,41 @@ const username = ref('')
 const password = ref('')
 const busy = ref(false)
 const error = ref('')
-const transfer = ref<TransferSummary | null>(null)
 const names = ref<Record<string, string>>({})
-const claimPendingWithoutDetails = computed(() => session.session?.pendingGuestClaim && !transfer.value?.conflicts.length)
+const claimConflicts = computed(() => session.pendingClaim?.conflicts || [])
+const claimPendingWithoutDetails = computed(() => session.session?.pendingGuestClaim && !claimConflicts.value.length)
 
 async function submit() {
   error.value = ''
   busy.value = true
   try {
-    transfer.value = await session.authenticate(username.value, password.value, registering.value)
-    if (!transfer.value.conflicts.length) await router.push('/')
+    await session.authenticate(username.value, password.value, registering.value)
+    if (!session.session?.pendingGuestClaim) await router.push('/')
   } catch (cause) {
     error.value = errorMessage(cause)
   } finally { busy.value = false }
 }
 
 async function resolveClaim() {
-  if (!transfer.value) return
+  if (!session.pendingClaim?.conflicts.length) return
   busy.value = true
   error.value = ''
   try {
-    await session.claimGuestData(transfer.value.conflicts.map((item) => ({
-      resourceType: item.resourceType,
-      guestResourceId: item.guestResourceId,
-      newName: names.value[`${item.resourceType}:${item.guestResourceId}`] || '',
+    await session.claimGuestData(session.pendingClaim.conflicts.map((item) => ({
+      resourceType: item.entityKind,
+      guestResourceId: item.resourceId,
+      newName: names.value[`${item.entityKind}:${item.resourceId}`] || '',
     })))
     await router.push('/')
   } catch (cause) { error.value = errorMessage(cause) }
+  finally { busy.value = false }
+}
+
+async function loadPendingClaim() {
+  busy.value = true
+  error.value = ''
+  try { await session.refreshPendingClaim() }
+  catch (cause) { error.value = errorMessage(cause) }
   finally { busy.value = false }
 }
 </script>
@@ -56,20 +63,21 @@ async function resolveClaim() {
       </div>
     </div>
     <div class="form-card auth-card">
-      <template v-if="transfer?.conflicts.length">
+      <template v-if="claimConflicts.length">
         <p class="eyebrow">
           BEHOLD ALT SAMLET
         </p><h2>Noen navn må avklares</h2>
         <p>Velg nye navn for gjestespillerne som kolliderer med kontoen din. Historikken og ID-ene beholdes.</p>
         <form @submit.prevent="resolveClaim">
           <label
-            v-for="item in transfer.conflicts"
-            :key="`${item.resourceType}:${item.guestResourceId}`"
+            v-for="item in claimConflicts"
+            :key="`${item.entityKind}:${item.resourceId}`"
             class="field-label"
           >
-            {{ item.resourceType === 'player' ? 'Spiller' : 'Lag' }} · {{ item.guestName }}
+            {{ item.entityKind === 'player' ? 'Spiller' : 'Lag' }} · {{ item.displayName }}
+            <span class="helper-text">Navnet kolliderer med: {{ item.collisionNames.join(', ') }}</span>
             <input
-              v-model="names[`${item.resourceType}:${item.guestResourceId}`]"
+              v-model="names[`${item.entityKind}:${item.resourceId}`]"
               required
               maxlength="80"
               autocomplete="off"
@@ -91,7 +99,7 @@ async function resolveClaim() {
           </button>
         </form>
       </template>
-      <template v-else>
+      <template v-else-if="!session.session?.pendingGuestClaim">
         <p class="eyebrow">
           VELKOMMEN TILBAKE
         </p><h2>{{ registering ? 'Opprett konto' : 'Logg inn' }}</h2>
@@ -137,13 +145,34 @@ async function resolveClaim() {
         >
           {{ registering ? 'Har du allerede en konto? Logg inn' : 'Ny her? Opprett konto' }}
         </button>
+      </template>
+      <template v-else>
+        <p class="eyebrow">
+          GJESTEOVERFØRING
+        </p>
+        <h2>Hent navneavklaringer</h2>
+        <p>En gjesteoverføring venter. Hent de ventende navnekonfliktene for å fortsette.</p>
+        <p
+          v-if="error"
+          class="notice notice-error"
+          role="alert"
+        >
+          {{ error }}
+        </p>
         <p
           v-if="claimPendingWithoutDetails"
           class="notice notice-warning"
           role="status"
         >
-          En gjesteoverføring venter på navneavklaring. API-et leverer ikke konfliktlisten på nytt etter at økten er lastet inn. Behold innloggingssvaret med konfliktene tilgjengelig, eller kontakt administrator for hjelp.
+          Ingen konfliktopplysninger er lastet inn ennå.
         </p>
+        <button
+          class="button button-primary button-full"
+          :disabled="busy"
+          @click="loadPendingClaim"
+        >
+          {{ busy ? 'Henter …' : 'Hent navnekonflikter' }}
+        </button>
       </template>
     </div>
   </section>

@@ -17,7 +17,19 @@ export interface TransferSummary {
   playersTransferred: number
   teamsTransferred: number
   tournamentsTransferred: number
-  conflicts: { resourceType: 'player' | 'team'; guestResourceId: Id; guestName: string }[]
+  conflicts: GuestNameConflict[]
+}
+
+export interface GuestNameConflict {
+  entityKind: 'player' | 'team'
+  resourceId: Id
+  displayName: string
+  collisionNames: string[]
+}
+
+export interface PendingGuestClaim {
+  pending: true
+  conflicts: TransferSummary['conflicts']
 }
 
 export interface AuthResult {

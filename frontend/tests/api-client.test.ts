@@ -54,6 +54,37 @@ describe('same-origin API client', () => {
     expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body))).toEqual({ scores: [11, 8] })
   })
 
+  it('loads pending guest conflicts and submits the rename with that session ETag', async () => {
+    const conflicts = [{
+      entityKind: 'player' as const,
+      resourceId: 'guest-player-1',
+      displayName: 'Ada',
+      collisionNames: ['Ada'],
+    }]
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ pending: true, conflicts }, 200, { ETag: '"session-v12"' }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    const client = new ApiClient('/api/v1', fetcher, () => 'csrf-token-value')
+
+    const pending = await client.pendingGuestClaim()
+    await client.claimGuestData([{
+      resourceType: 'player', guestResourceId: 'guest-player-1', newName: 'Ada fra gjest',
+    }], pending.etag!)
+
+    expect(fetcher.mock.calls[0][0]).toBe('/api/v1/session/claim')
+    expect(pending.data.conflicts).toEqual(conflicts)
+    const [postUrl, postInit] = fetcher.mock.calls[1]
+    const headers = new Headers(postInit?.headers)
+    expect(postUrl).toBe('/api/v1/session/claim')
+    expect(postInit?.method).toBe('POST')
+    expect(headers.get('If-Match')).toBe('"session-v12"')
+    expect(headers.get('X-CSRF-Token')).toBe('csrf-token-value')
+    expect(headers.get('Idempotency-Key')).toBeTruthy()
+    expect(JSON.parse(String(postInit?.body))).toEqual({ renames: [{
+      resourceType: 'player', guestResourceId: 'guest-player-1', newName: 'Ada fra gjest',
+    }] })
+  })
+
   it('parses safe RFC problem details and retry guidance', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
       type: 'about:blank', title: 'For mange forsøk', status: 429, detail: 'Prøv igjen senere.',

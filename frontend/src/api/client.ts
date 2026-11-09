@@ -1,5 +1,5 @@
 import type {
-  AuthResult, Id, Match, Page, Player, Problem, Schedule, Session,
+  AuthResult, Id, Match, Page, PendingGuestClaim, Player, Problem, Schedule, Session,
   Standings, StandingsView, Team, Tournament, TournamentMode,
 } from './types'
 
@@ -107,13 +107,17 @@ export class ApiClient {
     await this.request<void>('/auth/logout', { method: 'POST', csrf: true, idempotent: true })
   }
 
+  pendingGuestClaim() {
+    return this.request<PendingGuestClaim>('/session/claim')
+  }
+
   async claimGuestData(
     resolutions: { resourceType: 'player' | 'team'; guestResourceId: Id; newName: string }[],
+    sessionEtag: string,
   ): Promise<void> {
-    const current = await this.request<Session>('/session')
     await this.request('/session/claim', {
       method: 'POST', body: { renames: resolutions }, csrf: true,
-      ifMatch: current.etag || undefined, idempotent: true,
+      ifMatch: sessionEtag, idempotent: true,
     })
   }
 

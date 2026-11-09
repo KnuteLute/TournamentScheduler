@@ -19,19 +19,21 @@ The Vite development server serves the SPA at `/app/`; API requests stay same-or
 
 ## Root workspace coordination
 
-Root manifests and `README.md` are lead-owned and intentionally unchanged. The integration owner should add the frontend install/test/typecheck/build commands to the root `README.md` and decide whether root npm workspaces are appropriate. The frontend currently has its own `package.json` and committed lockfile; it does not depend on root workspace hoisting or modify the existing `web/package.json`.
+Root manifests and `README.md` are lead-owned and intentionally unchanged. The integration owner should add the frontend install/test/typecheck/build commands to the root `README.md` and decide whether root npm workspaces are appropriate. Dependency overrides are root-owned; the frontend package and lockfile intentionally contain no overrides. The frontend currently has its own `package.json` and committed lockfile and does not modify the existing `web/package.json`.
+
+The standalone lockfile retains the toolchain's declared dependency ranges. Apply the root-owned `minimatch` override in the repository workspace install; do not copy it into this package manifest.
 
 ## API contract notes
 
 - The client sends `credentials: 'same-origin'`, disables cached API reads, and sends the current session CSRF token on cookie-authenticated mutations.
 - Mutations use a new `Idempotency-Key`. The guest-session bootstrap is the documented exception.
-- Create requests do not send `If-Match`. Before editing/deleting an existing player or team, the client GETs that resource and uses its latest ETag. Before tournament lifecycle/availability commands and match commands/results, it GETs the tournament and uses the parent tournament ETag. Guest claim similarly GETs `/session` for its ETag.
+- Create requests do not send `If-Match`. Before editing/deleting an existing player or team, the client GETs that resource and uses its latest ETag. Before tournament lifecycle/availability commands and match commands/results, it GETs the tournament and uses the parent tournament ETag. For guest claim, the client GETs `/session/claim` to load pending conflict summaries and uses its session ETag for the CSRF-protected, idempotent POST.
 - The frontend does not generate schedules, calculate standings, or authorize actions. It renders server responses and reloads after accepted mutations. Form constraints are usability hints only; API validation and authorization remain authoritative.
 - RFC problem responses are surfaced with localized status guidance for session/authentication (401), CSRF/origin rejection (403), conflicts (409), stale preconditions (412), field validation (422), and rate limiting (429).
 
-## Contract limitation to resolve
+## Guest-claim resume flow
 
-`GET /session` exposes `pendingGuestClaim` as a boolean but no pending guest conflict details. The conflict list is returned only by the login/register `AuthResult.transfer`. A user whose browser reloads after a pending guest claim cannot reconstruct which resources need names from the current contract. The UI can resolve conflicts during the authentication response flow; after reload it reports the limitation rather than guessing names or IDs. Consider adding an owner-authorized pending-claim details operation or including safe conflict summaries in the session representation.
+When `GET /session` reports `pendingGuestClaim: true`, the Pinia session store fetches authenticated `GET /session/claim`, keeps its conflict summaries and ETag in memory, and renders the explicit rename form after a reload. Conflict summaries use `entityKind`, `resourceId`, `displayName`, and `collisionNames`; the POST maps these to the contract's `resourceType`, `guestResourceId`, and `newName` fields. Submission refreshes `/session/claim` for the current session ETag, then sends the requested names with CSRF and an idempotency key. A stale `412` is surfaced safely and the form can be submitted again using a fresh ETag.
 
 ## Accessibility and scope
 
