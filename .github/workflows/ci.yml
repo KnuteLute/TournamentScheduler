@@ -141,18 +141,24 @@ jobs:
           cleanup() {
             kill -TERM -- "-$app_pid" 2>/dev/null || true
             wait "$app_pid" 2>/dev/null || true
+            rm -f "$RUNNER_TEMP/readiness-response.json" "$RUNNER_TEMP/tournament-web.log"
           }
           trap cleanup EXIT
           ready=0
+          last_http_status=000
           for _ in $(seq 1 30); do
-            if curl --silent --fail --output /dev/null "$TEST_API_ORIGIN/api/v1/health/ready"; then
+            : > "$RUNNER_TEMP/readiness-response.json"
+            last_http_status="$(curl --silent --output "$RUNNER_TEMP/readiness-response.json" --write-out '%{http_code}' "$TEST_API_ORIGIN/api/v1/health/ready" || true)"
+            last_http_status="${last_http_status:-000}"
+            if [[ "$last_http_status" == "200" ]]; then
               ready=1
               break
             fi
             sleep 2
           done
           if [[ "$ready" != 1 ]]; then
-            echo "::error::Application did not become ready at the configured test API origin. Application log is retained only on the ephemeral runner and is not printed or uploaded."
+            health_status="$(jq -r 'if .status == "ready" or .status == "not_ready" or .status == "live" then .status else "unknown" end' "$RUNNER_TEMP/readiness-response.json" 2>/dev/null || printf 'unknown')"
+            echo "::error::Application readiness failed (HTTP ${last_http_status}; sanitized health status: ${health_status}; 30 attempts). Response body and application logs were not printed or uploaded."
             exit 1
           fi
           npm run test:integration
@@ -211,18 +217,24 @@ jobs:
           cleanup() {
             kill -TERM -- "-$app_pid" 2>/dev/null || true
             wait "$app_pid" 2>/dev/null || true
+            rm -f "$RUNNER_TEMP/readiness-response.json" "$RUNNER_TEMP/tournament-web.log"
           }
           trap cleanup EXIT
           ready=0
+          last_http_status=000
           for _ in $(seq 1 30); do
-            if curl --silent --fail --output /dev/null "$E2E_BASE_URL/api/v1/health/ready"; then
+            : > "$RUNNER_TEMP/readiness-response.json"
+            last_http_status="$(curl --silent --output "$RUNNER_TEMP/readiness-response.json" --write-out '%{http_code}' "$E2E_BASE_URL/api/v1/health/ready" || true)"
+            last_http_status="${last_http_status:-000}"
+            if [[ "$last_http_status" == "200" ]]; then
               ready=1
               break
             fi
             sleep 2
           done
           if [[ "$ready" != 1 ]]; then
-            echo "::error::Application did not become ready at the configured E2E base URL. Application log is retained only on the ephemeral runner and is not printed or uploaded."
+            health_status="$(jq -r 'if .status == "ready" or .status == "not_ready" or .status == "live" then .status else "unknown" end' "$RUNNER_TEMP/readiness-response.json" 2>/dev/null || printf 'unknown')"
+            echo "::error::Application readiness failed (HTTP ${last_http_status}; sanitized health status: ${health_status}; 30 attempts). Response body and application logs were not printed or uploaded."
             exit 1
           fi
           npm run test:e2e
