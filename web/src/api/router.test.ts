@@ -280,11 +280,12 @@ test("server enforces roster caps and persisted-mode PATCH bounds", async () => 
 			name: "Large teams", mode: "2v2_fixed", teamIds: ids("t", 17),
 		}));
 		assert.equal(tooManyFixedTeams.status, 422);
-		const patchHeaders = { ...headers, "Content-Type": "application/merge-patch+json" };
-		const tooManyPaused = await send(port, "PATCH", "/api/v1/tournaments/t1/availability", patchHeaders, JSON.stringify({ pausedPlayerIds: ids("p", 33) }));
+		const availabilityHeaders = { ...headers, "Content-Type": "application/json" };
+		const tooManyPaused = await send(port, "PATCH", "/api/v1/tournaments/t1/availability", availabilityHeaders, JSON.stringify({ pausedPlayerIds: ids("p", 33) }));
 		assert.equal(tooManyPaused.status, 422);
 		const tooManyPatchTeams = await send(port, "PATCH", "/api/v1/tournaments/t1", {
-			...patchHeaders,
+			...headers,
+			"Content-Type": "application/merge-patch+json",
 		}, JSON.stringify({ teamIds: ids("t", 17) }));
 		assert.equal(tooManyPatchTeams.status, 422);
 		assert.deepEqual(operations.map((request) => request.operation), ["tournaments.get"]);
@@ -491,6 +492,53 @@ test("cookie writes require session-bound CSRF and a strong If-Match", async () 
 		assert.equal(operations[0]?.actor?.ownerId, "owner-1");
 		assert.equal(operations[0]?.expectedETag, '"v1"');
 		assert.equal(operations[0]?.idempotency?.anchor, "actor-owner");
+	});
+});
+
+test("availability PATCH accepts JSON with CSRF and ETag but rejects unsupported media types", async () => {
+	const token = newOpaqueCredential();
+	const csrf = csrfForSession(token, config);
+	const session: SessionRecord = {
+		id: "session-availability",
+		ownerId: "owner-availability",
+		kind: "guest",
+		account: null,
+		csrfTokenHash: protectedHash(csrf, config),
+		expiresAt: new Date(Date.now() + 60_000),
+		revokedAt: null,
+		pendingGuestClaim: false,
+		version: 1,
+	};
+	const { store, operations } = mockStore({ session });
+	await withApi(store, async (port) => {
+		const common = {
+			Cookie: `__Host-ts_session=${token}`,
+			Origin: config.origin,
+			"X-CSRF-Token": csrf,
+			"Idempotency-Key": "availability-json-content-type-1",
+			"If-Match": '"v1"',
+		};
+		const accepted = await send(port, "PATCH", "/api/v1/tournaments/t1/availability", {
+			...common,
+			"Content-Type": "application/json",
+		}, JSON.stringify({ pausedPlayerIds: [] }));
+		assert.equal(accepted.status, 200);
+		assert.equal(accepted.headers.etag, '"v1"');
+		assert.equal(operations[0]?.operation, "tournaments.updateAvailability");
+		assert.equal(operations[0]?.expectedETag, '"v1"');
+		assert.deepEqual(operations[0]?.input, { pausedPlayerIds: [] });
+
+		const unsupported = await send(port, "PATCH", "/api/v1/tournaments/t1/availability", {
+			...common,
+			"Content-Type": "text/plain",
+		}, JSON.stringify({ pausedPlayerIds: [] }));
+		assert.equal(unsupported.status, 415);
+		const wrongPatchType = await send(port, "PATCH", "/api/v1/tournaments/t1/availability", {
+			...common,
+			"Content-Type": "application/merge-patch+json",
+		}, JSON.stringify({ pausedPlayerIds: [] }));
+		assert.equal(wrongPatchType.status, 415);
+		assert.equal(operations.length, 1);
 	});
 });
 
