@@ -1,412 +1,127 @@
-import express from 'express';
+import express, { type Express, type Request, type Response } from 'express';
 import path from 'path';
-import fs from 'fs';
-import expressLayouts from 'express-ejs-layouts';
-import cookieParser from 'cookie-parser';
-import { Database } from './lib/database';
-import { AuthUtils } from './lib/auth';
 import { randomUUID } from 'crypto';
-import { generate1v1Matches, generateFixed2v2Matches , generateNextDynamic2v2Match } from './lib/scheduler';
-import { Match, Participant } from './types';
+import { createApiRouter } from './api/router';
+import { ApiProblem, sendProblem } from './api/problem';
+import { createApiConfig, type ApiConfig } from './config/api';
+import type { ApiStore, RateLimitRequest, RateLimitDecision, SessionRecord, AccountCredential, StoreRequest, StoreResult } from './services/ports';
 
-const app = express();
-const DEFAULT_PORT = 3000;
+declare const require: (id: string) => unknown;
 
-const MODE_LABELS: Record<string, string> = {
-    '1v1': '1 mot 1',
-    '2v2-fixed': '2 mot 2 - faste lag',
-    '2v2-rotating': '2 mot 2'
-};
-
-function getModeLabel(mode: string) {
-    return MODE_LABELS[mode] || mode;
+export interface ApplicationOptions {
+  staticDirectory?: string;
+  production?: boolean;
 }
 
-function normalizePlayerName(name: string) {
-    return name.trim().replace(/\s+/g, ' ').toLocaleLowerCase('nb-NO');
+function setSecurityHeaders(response: Response, production: boolean): void {
+  response.setHeader('X-Content-Type-Options', 'nosniff');
+  response.setHeader('X-Frame-Options', 'DENY');
+  response.setHeader('Referrer-Policy', 'no-referrer');
+  response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  response.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'",
+  );
+  if (production) response.setHeader('Strict-Transport-Security', 'max-age=31536000');
 }
 
-function buildNextMatchPreview(
-    mode: string,
-    matches: Match[],
-    currentMatchIndex: number,
-    participants: Participant[],
-    pausedPlayerIds: string[]
-) {
-    if (currentMatchIndex < matches.length - 1) {
-        return matches[currentMatchIndex + 1] || null;
-    }
-
-    if (mode === '2v2-rotating') {
-        return generateNextDynamic2v2Match(matches.slice(0, currentMatchIndex + 1), participants, pausedPlayerIds);
-    }
-
-    return null;
+function sendNotFound(_request: Request, response: Response): void {
+  sendProblem(
+    response,
+    new ApiProblem(404, 'not-found', 'Not Found', 'The requested route was not found.'),
+    randomUUID(),
+  );
 }
 
-app.set('view engine', 'ejs');
-app.set('views', path.join(__dirname, '../views'));
-app.use(expressLayouts);
-app.set('layout', 'layout');
-
-app.use(express.static(path.join(__dirname, '../public'), {
-    maxAge: '1y',
-    immutable: true
-}));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(cookieParser());
-
-// --- Authentication Middleware ---
-app.use(async (req, res, next) => {
-    res.locals.user = null; // Default to no user for templates
-    res.locals.guestSessionId = null;
-
-    // Handle Auth Cookie
-    const token = req.cookies.token;
-    if (token) {
-        const decoded = AuthUtils.verifyToken(token);
-        if (decoded && decoded.userId) {
-            const user = await Database.getUserById(decoded.userId);
-            if (user) {
-                res.locals.user = { id: user.id, username: user.username };
-            }
-        }
+function lazyPostgresStore(): ApiStore {
+  let resolved: ApiStore | undefined;
+  const getStore = (): ApiStore => {
+    if (!resolved) {
+      const module = require('./persistence/api-store') as { createPostgresApiStore?: () => ApiStore };
+      if (typeof module.createPostgresApiStore !== 'function') {
+        throw new Error('PostgreSQL API persistence is not configured.');
+      }
+      resolved = module.createPostgresApiStore();
     }
+    return resolved;
+  };
 
-    // Handle Guest Session Cookie if not authenticated
-    if (!res.locals.user) {
-        let guestSession = req.cookies.guest_session;
-        if (!guestSession) {
-            guestSession = randomUUID();
-            res.cookie('guest_session', guestSession, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 24 * 60 * 60 * 1000 }); // 1 day
-        }
-        res.locals.guestSessionId = guestSession;
-    }
+  return {
+    lookupSessionByTokenHash: (tokenHash: Uint8Array, now: Date): Promise<SessionRecord | null> =>
+      getStore().lookupSessionByTokenHash(tokenHash, now),
+    findAccountByUsernameKey: (usernameKey: string): Promise<AccountCredential | null> =>
+      getStore().findAccountByUsernameKey(usernameKey),
+    consumeRateLimit: (input: RateLimitRequest): Promise<RateLimitDecision> =>
+      getStore().consumeRateLimit(input),
+    execute: <T = unknown>(request: StoreRequest): Promise<StoreResult<T>> =>
+      getStore().execute<T>(request),
+    healthCheck: async (): Promise<boolean> => {
+      const healthCheck = getStore().healthCheck;
+      return healthCheck ? healthCheck() : false;
+    },
+  };
+}
 
+/**
+ * Build the same-origin application. All JSON operations go through the
+ * owner-scoped v1 API; legacy EJS handlers and process-global tournament state
+ * are deliberately not mounted.
+ */
+export function createApplication(
+  store: ApiStore,
+  config: ApiConfig,
+  options: ApplicationOptions = {},
+): Express {
+  const application = express();
+  const production = options.production ?? config.production;
+  const staticDirectory = path.resolve(
+    options.staticDirectory ?? path.join(__dirname, '../public'),
+  );
+  const spaEntry = path.join(staticDirectory, 'app', 'index.html');
+
+  application.disable('x-powered-by');
+  application.use((_request, response, next) => {
+    setSecurityHeaders(response, production);
     next();
-});
+  });
+  application.use('/api/v1', createApiRouter(store, config));
 
+  application.use(express.static(staticDirectory, {
+    index: false,
+    fallthrough: true,
+    setHeaders(response, filePath) {
+      if (filePath.endsWith(`${path.sep}index.html`)) {
+        response.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        response.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    },
+  }));
 
-
-// --- Auth Routes ---
-app.get('/login', (req, res) => {
-    res.render('login', { title: 'Logg inn', hideHeader: true, error: null });
-});
-
-app.post('/login', async (req, res) => {
-    const { username, password } = req.body;
-    const user = await Database.getUserByUsername(username);
-    if (!user) {
-           return res.render('login', { title: 'Logg inn', hideHeader: true, error: 'Feil brukernavn eller passord.' });
-    }
-    const isMatch = await AuthUtils.comparePassword(password, user.password_hash);
-    if (!isMatch) {
-            return res.render('login', { title: 'Logg inn', hideHeader: true, error: 'Feil brukernavn eller passord.' });
-    }
-    const token = AuthUtils.generateToken(user.id);
-    res.cookie('token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 });
-    
-    // Merge guest data
-    const guestSession = req.cookies.guest_session;
-    if (guestSession) {
-        await Database.mergeGuestData(user.id, guestSession);
-        res.clearCookie('guest_session');
-    }
-    
-    res.redirect('/');
-});
-
-app.get('/signup', (req, res) => {
-    res.render('signup', { title: 'Registrer deg', hideHeader: true, error: null });
-});
-
-app.post('/signup', async (req, res) => {
-    const { username, password } = req.body;
-    if (password.length < 6) {
-        return res.render('signup', { title: 'Registrer deg', hideHeader: true, error: 'Passordet må være minst 6 tegn langt.' });
-    }
-    const hash = await AuthUtils.hashPassword(password);
-    const userId = await Database.createUser(username, hash);
-    if (!userId) {
-        return res.render('signup', { title: 'Registrer deg', hideHeader: true, error: 'Brukernavnet er allerede i bruk.' });
-    }
-    const token = AuthUtils.generateToken(userId);
-    res.cookie('token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 });
-    
-    // Merge guest data
-    const guestSession = req.cookies.guest_session;
-    if (guestSession) {
-        await Database.mergeGuestData(userId, guestSession);
-        res.clearCookie('guest_session');
-    }
-    
-    res.redirect('/');
-});
-
-app.post('/logout', (req, res) => {
-    res.clearCookie('token');
-    res.redirect('/');
-});
-
-app.get('/', async (req, res) => {
-    const players = await Database.getPlayers(res.locals.user?.id || null, res.locals.guestSessionId);
-    res.render('home', { 
-        title: 'Shuffleboardturnering',
-        players: players,
+  application.get('/', (_request, response) => response.redirect(303, '/app/'));
+  application.get(['/app', '/app/*'], (_request, response, next) => {
+    response.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    response.sendFile(spaEntry, (error) => {
+      if (error && !response.headersSent) next(error);
     });
-});
+  });
 
-app.get('/play', async (req, res) => {
-    res.render('play', { 
-        title: 'Ny kamp',
-    });
-});
+  application.use('/api', (request, response) => sendNotFound(request, response));
+  application.use((request, response) => sendNotFound(request, response));
+  application.use((error: unknown, _request: Request, response: Response, _next: (error?: unknown) => void) => {
+    if (response.headersSent) return;
+    sendProblem(
+      response,
+      new ApiProblem(500, 'internal-error', 'Internal Server Error', 'The request could not be completed.'),
+      randomUUID(),
+    );
+  });
 
-app.get('/play/:mode', async (req, res) => {
-    const { mode } = req.params;
-    const { error } = req.query;
-    const players = await Database.getPlayers(res.locals.user?.id || null, res.locals.guestSessionId);
-    res.render('team_selection', { 
-        title: `Velg spillere for ${getModeLabel(mode)}`,
-        mode: mode,
-        players: players,
-        error: error
-    });
-});
-
-app.post('/players/add', async (req, res) => {
-    const { name, mode } = req.body;
-    if (name && name.trim()) {
-        try {
-            const normalizedName = normalizePlayerName(name);
-            const existingPlayers = await Database.getPlayers(res.locals.user?.id || null, res.locals.guestSessionId);
-            if (existingPlayers.some(player => normalizePlayerName(player.name) === normalizedName)) {
-                return res.redirect(`/play/${mode}?error=Spilleren finnes allerede. Bruk et annet navn.`);
-            }
-            await Database.addPlayer(name.trim(), res.locals.user?.id || null, res.locals.guestSessionId);
-        } catch (e) {
-            console.error(e);
-        }
-    }
-    res.redirect(`/play/${mode}`);
-});
-
-app.post('/api/players/add', async (req, res) => {
-    const { name } = req.body;
-    if (name && name.trim()) {
-        try {
-            const normalizedName = normalizePlayerName(name);
-            const existingPlayers = await Database.getPlayers(res.locals.user?.id || null, res.locals.guestSessionId);
-            if (existingPlayers.some(player => normalizePlayerName(player.name) === normalizedName)) {
-                return res.status(409).json({ error: 'Spilleren finnes allerede. Bruk et annet navn.' });
-            }
-            const player = await Database.addPlayer(name.trim(), res.locals.user?.id || null, res.locals.guestSessionId);
-            return res.json({ success: true, player });
-        } catch (e) {
-            console.error(e);
-            return res.status(500).json({ error: 'Kunne ikke legge til spiller.' });
-        }
-    }
-    return res.status(400).json({ error: 'Ugyldig navn.' });
-});
-
-app.get('/history', async (req, res) => {
-    const tournaments = await Database.getTournamentHistory(res.locals.user?.id || null, res.locals.guestSessionId);
-    res.render('history', { 
-        title: 'Turneringshistorikk',
-        tournaments: tournaments.reverse() // show newest first
-    });
-});
-
-app.get('/history/:id', async (req, res) => {
-    const tournaments = await Database.getTournamentHistory(res.locals.user?.id || null, res.locals.guestSessionId);
-    const tournament = tournaments.find(t => t.id === req.params.id);
-    if (!tournament) return res.redirect('/history');
-    
-    res.render('history_detail', {
-        title: 'Turneringsdetaljer',
-        tournament: tournament
-    });
-});
-
-app.get('/leaderboard', async (req, res) => {
-    const allPlayers = await Database.getPlayers(res.locals.user?.id || null, res.locals.guestSessionId);
-    
-    let leaderboard = allPlayers;
-    
-    leaderboard.sort((a: any, b: any) => b.wins - a.wins || b.diff - a.diff);
-
-    res.render('leaderboard', { 
-        title: 'Ledertavle',
-        leaderboard: leaderboard
-    });
-});
-
-if (process.env.NODE_ENV !== 'production') {
-    const server = app.listen(DEFAULT_PORT, () => {
-        console.log(`Server is running on http://localhost:${DEFAULT_PORT}`);
-    }).on('error', (err: any) => {
-        if (err.code === 'EADDRINUSE') {
-            console.log(`Port ${DEFAULT_PORT} is busy, trying ${DEFAULT_PORT + 1}...`);
-            app.listen(DEFAULT_PORT + 1);
-        } else {
-            console.error(err);
-        }
-    });
+  return application;
 }
 
-// Export the app for Vercel Serverless environment
+const defaultConfig = createApiConfig();
+const defaultStore = lazyPostgresStore();
+const app = createApplication(defaultStore, defaultConfig);
+
 export default app;
-
-let tournamentState = {
-    mode: '',
-    matches: [] as Match[],
-    participants: [] as Participant[],
-    pausedPlayerIds: [] as string[],
-    currentMatchIndex: 0
-};
-
-app.post('/play/:mode/start', async (req, res) => {
-    const { mode } = req.params;
-    let playerIds = req.body.playerIds;
-    
-    if (!playerIds || (Array.isArray(playerIds) && playerIds.length === 0)) {
-        return res.redirect(`/play/${mode}?error=Velg minst spillere.`);
-    }
-
-    if (!Array.isArray(playerIds)) {
-        playerIds = [playerIds];
-    }
-    
-    const allPlayers = await Database.getPlayers(res.locals.user?.id || null, res.locals.guestSessionId);
-    const participants: Participant[] = playerIds.map((id: string) => {
-        const found = allPlayers.find(p => p.id === id);
-        return found ? found : { id, name: id };
-    });
-    
-    tournamentState.mode = mode;
-    tournamentState.currentMatchIndex = 0;
-    tournamentState.participants = participants;
-    tournamentState.pausedPlayerIds = [];
-
-    if (mode === '1v1') {
-        tournamentState.matches = generate1v1Matches(participants);
-    } else if (mode === '2v2-rotating') {
-        if (participants.length < 4) {
-            return res.redirect(`/play/${mode}?error=Du trenger minst 4 spillere for 2 mot 2.`);
-        }
-        tournamentState.matches = [];
-        const initialMatch = generateNextDynamic2v2Match([], participants, []);
-        if (initialMatch) tournamentState.matches.push(initialMatch);
-    } else if (mode === '2v2-fixed') {
-        if (participants.length < 4) {
-            return res.redirect(`/play/${mode}?error=Du trenger minst 4 spillere for faste 2 mot 2.`);
-        }
-        tournamentState.matches = generateFixed2v2Matches(participants);
-    }
-    
-    res.redirect('/tournament/active');
-});
-
-app.get('/tournament/active', (req, res) => {
-    if (tournamentState.matches.length === 0) {
-        return res.redirect('/play?error=Ingen aktiv turnering.');
-    }
-
-    const currentMatch = tournamentState.matches[tournamentState.currentMatchIndex];
-    const nextMatchPreview = buildNextMatchPreview(
-        tournamentState.mode,
-        tournamentState.matches,
-        tournamentState.currentMatchIndex,
-        tournamentState.participants,
-        tournamentState.pausedPlayerIds
-    );
-
-    res.render('game_play', {
-        title: 'Kamp',
-        hideHeader: true,
-        match: currentMatch,
-        currentIndex: tournamentState.currentMatchIndex,
-        totalMatches: tournamentState.matches.length,
-        mode: tournamentState.mode,
-        participants: tournamentState.participants,
-        pausedPlayerIds: tournamentState.pausedPlayerIds,
-        modeLabel: getModeLabel(tournamentState.mode),
-        nextMatchPreview
-    });
-});
-
-app.post('/tournament/score', (req, res) => {
-    const { score1, score2, action } = req.body;
-    const pausedIds = req.body.pausedIds || [];
-    const currentMatch = tournamentState.matches[tournamentState.currentMatchIndex];
-    if (currentMatch && currentMatch.teams && currentMatch.teams.length >= 2) {
-        const team1 = currentMatch.teams[0];
-        const team2 = currentMatch.teams[1];
-        if (team1) team1.score = parseInt(score1 || '0', 10);
-        if (team2) team2.score = parseInt(score2 || '0', 10);
-    }
-
-    if (Array.isArray(pausedIds)) {
-        tournamentState.pausedPlayerIds = pausedIds;
-    } else if (pausedIds) {
-        tournamentState.pausedPlayerIds = [pausedIds];
-    }
-    
-    if (action === 'prev') {
-        res.redirect('/tournament/prev');
-    } else if (action === 'next') {
-        res.redirect('/tournament/next');
-    } else if (action === 'skip') {
-        tournamentState.matches.splice(tournamentState.currentMatchIndex, 1);
-        if (tournamentState.mode === '2v2-rotating') {
-            const nextMatch = generateNextDynamic2v2Match(tournamentState.matches, tournamentState.participants, tournamentState.pausedPlayerIds);
-            if (nextMatch) tournamentState.matches.push(nextMatch);
-            else if (tournamentState.matches.length === 0) return res.redirect('/tournament/finish');
-        }
-        if (tournamentState.currentMatchIndex >= tournamentState.matches.length) {
-            tournamentState.currentMatchIndex = Math.max(0, tournamentState.matches.length - 1);
-        }
-        res.redirect('/tournament/active');
-    } else if (action === 'finish') {
-        res.redirect(307, '/tournament/finish');
-    } else {
-        res.redirect('/tournament/active');
-    }
-});
-
-app.get('/tournament/next', (req, res) => {
-    if (tournamentState.currentMatchIndex < tournamentState.matches.length - 1) {
-        tournamentState.currentMatchIndex++;
-    } else if (tournamentState.mode === '2v2-rotating') {
-        const nextMatch = generateNextDynamic2v2Match(tournamentState.matches, tournamentState.participants, tournamentState.pausedPlayerIds);
-        if (nextMatch) {
-            tournamentState.matches.push(nextMatch);
-            tournamentState.currentMatchIndex++;
-        }
-    }
-    res.redirect('/tournament/active');
-});
-
-app.get('/tournament/prev', (req, res) => {
-    if (tournamentState.currentMatchIndex > 0) {
-        tournamentState.currentMatchIndex--;
-    }
-    res.redirect('/tournament/active');
-});
-
-app.post('/tournament/toggle_pause', (req, res) => {
-    const pausedIds = req.body.pausedIds || [];
-    tournamentState.pausedPlayerIds = Array.isArray(pausedIds) ? pausedIds : [pausedIds];
-    res.redirect('/tournament/active');
-});
-
-app.post('/tournament/finish', async (req, res) => {
-    if (tournamentState.matches.length > 0) {
-        await Database.saveTournament(tournamentState.mode, tournamentState.matches, res.locals.user?.id || null, res.locals.guestSessionId);
-    }
-    tournamentState.matches = [];
-    tournamentState.currentMatchIndex = 0;
-    res.redirect('/history');
-});

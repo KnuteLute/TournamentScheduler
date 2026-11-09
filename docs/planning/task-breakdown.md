@@ -11,7 +11,7 @@
 
 | Workstream | Branch | Worktree | Exclusive writable paths |
 |---|---|---|---|
-| Engineering Lead / integration | `upgrade/tournament-v2` | `TournamentScheduler-worktrees/lead` | `architecture.md`, `docs/planning/**`, root manifests/config, `.gitignore`, `.env.example`, `README.md`, `AGENTS.md`, legacy `web/package*`, `web/tsconfig.json`, `web/src/app.ts`, `web/src/server.ts` |
+| Engineering Lead / integration | `upgrade/tournament-v2` | `TournamentScheduler-worktrees/lead` | `architecture.md`, `docs/planning/**`, root manifests/config, `.gitignore`, `.env.example`, `README.md`, `AGENTS.md`, legacy `web/package*`, `web/tsconfig.json`, `web/src/app.ts`, `web/src/server.ts`, targeted legacy auth/generated app artifact security cleanup after replacement routes are mounted |
 | API Contracts | `upgrade/contracts` | `TournamentScheduler-worktrees/contracts` | `packages/contracts/**`, `docs/api/**` |
 | Persistence | `upgrade/persistence` | `TournamentScheduler-worktrees/persistence` | `web/src/persistence/**`, `web/db/**`, `web/scripts/**`, `docs/database/**` |
 | Scheduling & Standings | `upgrade/domain` | `TournamentScheduler-worktrees/domain` | `web/src/domain/**`, `docs/domain/**` |

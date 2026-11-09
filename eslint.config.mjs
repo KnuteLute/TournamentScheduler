@@ -9,9 +9,13 @@ const maintainedTypeScript = [
   "web/src/auth/**/*.ts",
   "web/src/config/**/*.ts",
   "web/src/domain/**/*.ts",
+  "web/src/app.ts",
+  "web/src/server.ts",
+  "web/src/app.test.ts",
   "web/src/persistence/**/*.ts",
   "web/src/services/**/*.ts",
   "frontend/src/**/*.ts",
+  "frontend/tests/**/*.ts",
   "packages/contracts/src/**/*.ts",
   "tests/**/*.ts",
 ];
@@ -41,8 +45,10 @@ export default [
       ...tsPlugin.configs.recommended.rules,
       "no-undef": "off",
       "no-unused-vars": "off",
-      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" }],
+      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_", varsIgnorePattern: "^_", destructuredArrayIgnorePattern: "^_", ignoreRestSiblings: true }],
       "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/no-namespace": "off",
+      "no-control-regex": "off",
     },
   },
   {
@@ -50,6 +56,7 @@ export default [
     languageOptions: {
       parser: vueParser,
       parserOptions: { parser: tsParser, ecmaVersion: "latest", sourceType: "module" },
+      globals: { window: "readonly", document: "readonly", console: "readonly", TextEncoder: "readonly", fetch: "readonly" },
     },
     plugins: { vue: vuePlugin },
     rules: {
@@ -57,5 +64,21 @@ export default [
       "vue/no-dupe-keys": "error",
       "vue/no-unused-vars": "error",
     },
+  },
+  {
+    files: ["tests/**/*.js"],
+    languageOptions: {
+      globals: {
+        require: "readonly",
+        module: "readonly",
+        __dirname: "readonly",
+        process: "readonly",
+        console: "readonly",
+        describe: "readonly",
+        test: "readonly",
+        expect: "readonly",
+      },
+    },
+    rules: { "no-unused-vars": "off" },
   },
 ];

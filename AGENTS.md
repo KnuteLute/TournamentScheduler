@@ -4,7 +4,7 @@
 
 This upgrade is coordinated in branch `upgrade/tournament-v2` with one agent branch and worktree per workstream. Each contributor may edit only their exclusive ownership paths in `docs/planning/task-breakdown.md`. Read access is unrestricted. Do not edit the legacy Express files or another workstream's paths unless explicitly reassigned by the Engineering Lead.
 
-All agent work must be committed on its assigned branch and submitted as a pull request targeting `upgrade/tournament-v2`. Do not push commits directly to the integration branch or `main`. The Engineering Lead reviews changes and integrates through PRs. Keep commits scoped and never discard another contributor's changes.
+All agent work must be committed on its assigned branch and submitted as a pull request targeting `upgrade/tournament-v2`. Do not push commits directly to the integration branch or `main`. The Engineering Lead reviews changes and integrates through PRs. Keep commits scoped and never discard another contributor's changes. The lead may make explicit integration/security cleanup changes on the integration branch; document the scope and keep those changes separate from agent PR ownership.
 
 ## Planning gate
 
@@ -19,3 +19,7 @@ Every request body and query parameter must be schema-validated and bounded. Mut
 ## Quality and security
 
 Before a PR is ready, run relevant tests, lint, type-check and build commands and include actual results in the PR. Add regression tests for fixed issues. Never claim checks passed if they were not run. Do not log passwords, tokens, cookies, or sensitive payloads. Security findings and limitations must be recorded in `docs/security/review.md`; critical/high findings block release.
+
+## Explicit lead security-cleanup scope
+
+After the replacement API/authentication routes are mounted, the Engineering Lead owns the targeted removal of the unused legacy JWT fallback in `web/src/lib/auth.ts` and stale generated auth/app JavaScript artifacts that could otherwise be executed as an alternate unsafe entry point. Do not modify those legacy paths from another workstream; report new findings to the lead.
