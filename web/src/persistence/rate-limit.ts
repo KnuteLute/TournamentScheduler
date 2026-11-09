@@ -36,15 +36,16 @@ function validateInput(input: RateLimitConsumeInput): void {
 /**
  * Atomically consumes one fixed-window request. The single INSERT .. ON
  * CONFLICT statement serializes competing instances on the bucket's primary
- * key; the request count stops increasing once blocked. `now` comes from the
- * trusted API server, never from request data.
+ * key; the request count saturates at maximum + 1 (one blocked-attempt marker).
+ * The statement returns the admission decision separately from the count.
+ * `now` comes from the trusted API server, never from request data.
  */
 export async function consumeRateLimitBucket(
   queryable: Queryable,
   input: RateLimitConsumeInput,
 ): Promise<RateLimitConsumeResult> {
   validateInput(input);
-  const rows = await queryable.query<{ request_count: number; reset_at: Date }>(
+  const rows = await queryable.query<{ request_count: number; reset_at: Date; allowed: boolean }>(
     `WITH request_clock AS (SELECT $2::timestamptz AS current_time)
      INSERT INTO rate_limit_buckets AS current_bucket
        (bucket_key_hash, request_count, window_started_at, reset_at)
@@ -55,8 +56,8 @@ export async function consumeRateLimitBucket(
      ON CONFLICT (bucket_key_hash) DO UPDATE SET
        request_count = CASE
          WHEN current_bucket.reset_at <= EXCLUDED.window_started_at THEN 1
-          WHEN current_bucket.request_count < $4 THEN current_bucket.request_count + 1
-         ELSE current_bucket.request_count
+          WHEN current_bucket.request_count <= $4 THEN current_bucket.request_count + 1
+          ELSE current_bucket.request_count
        END,
        window_started_at = CASE
          WHEN current_bucket.reset_at <= EXCLUDED.window_started_at THEN EXCLUDED.window_started_at
@@ -66,19 +67,18 @@ export async function consumeRateLimitBucket(
          WHEN current_bucket.reset_at <= EXCLUDED.window_started_at THEN EXCLUDED.reset_at
          ELSE current_bucket.reset_at
        END
-     RETURNING request_count, reset_at`,
+     RETURNING request_count, reset_at, request_count <= $4 AS allowed`,
     [Buffer.from(input.bucketHash, 'hex'), input.now, input.windowMs, input.maximum],
   );
   const row = rows[0];
   if (!row) throw new Error('Rate-limit bucket operation returned no result');
   const count = Number(row.request_count);
   const resetAt = row.reset_at instanceof Date ? row.reset_at : new Date(row.reset_at);
-  if (!Number.isSafeInteger(count) || Number.isNaN(resetAt.getTime())) {
+  if (!Number.isSafeInteger(count) || Number.isNaN(resetAt.getTime()) || typeof row.allowed !== 'boolean') {
     throw new Error('Rate-limit bucket operation returned invalid data');
   }
-  const allowed = count <= input.maximum;
-  const retryAfterSeconds = allowed ? 0 : Math.max(0, Math.ceil((resetAt.getTime() - input.now.getTime()) / 1_000));
-  return { allowed, retryAfterSeconds };
+  const retryAfterSeconds = row.allowed ? 0 : Math.max(0, Math.ceil((resetAt.getTime() - input.now.getTime()) / 1_000));
+  return { allowed: row.allowed, retryAfterSeconds };
 }
 
 /** Delete expired rows in a bounded, concurrency-safe batch. */

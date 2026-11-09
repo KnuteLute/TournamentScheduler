@@ -55,21 +55,31 @@ async function main(): Promise<void> {
     const bucket = await first.query<{ request_count: number }>(
       'SELECT request_count FROM rate_limit_buckets WHERE bucket_key_hash = $1', [concurrentKeyBytes],
     );
-    assert.strictEqual(Number(bucket[0]?.request_count), 5, 'blocked attempts must not increase the count');
+    assert.strictEqual(Number(bucket[0]?.request_count), 6, 'the count saturates at the maximum plus one blocked-attempt marker');
 
-    await first.execute(
-      `UPDATE rate_limit_buckets SET window_started_at = statement_timestamp() - interval '2 minutes',
-       reset_at = statement_timestamp() - interval '1 minute' WHERE bucket_key_hash = $1`, [concurrentKeyBytes],
+    const aged = await first.execute(
+      `UPDATE rate_limit_buckets SET window_started_at = statement_timestamp() - interval '100 years',
+       reset_at = statement_timestamp() - interval '99 years' WHERE bucket_key_hash = $1`, [concurrentKeyBytes],
     );
-    const pruned = await pruneExpiredRateLimitBuckets(first, { batchSize: 10 });
-    assert.strictEqual(pruned, 1, 'bounded expiry cleanup removes expired buckets');
+    assert.strictEqual(aged,1,'test bucket is marked expired');
+    const pruned = await pruneExpiredRateLimitBuckets(first, { batchSize: 10_000 });
+    assert.ok(pruned>=1,'bounded expiry cleanup removes expired buckets');
+    const remaining = await first.query<{count:string}>(
+      'SELECT count(*)::text count FROM rate_limit_buckets WHERE bucket_key_hash=$1',[concurrentKeyBytes],
+    );
+    assert.strictEqual(Number(remaining[0]?.count),0,'expired test bucket is removed');
   } finally {
     await first.execute('DELETE FROM rate_limit_buckets WHERE bucket_key_hash = $1 OR bucket_key_hash = $2', [rollbackKeyBytes, concurrentKeyBytes]);
     await Promise.all([first.close(), second.close()]);
   }
 }
 
-main().then(() => process.stdout.write('Rate-limit PostgreSQL transaction/concurrency checks passed\n')).catch(() => {
-  console.error('Rate-limit PostgreSQL checks failed; no connection details were emitted.');
+main().then(() => process.stdout.write('Rate-limit PostgreSQL transaction/concurrency checks passed\n')).catch((error: unknown) => {
+  const failure=error&&typeof error==='object'?error as {name?:unknown;code?:unknown;stack?:unknown}:{};
+  const name=typeof failure.name==='string'&&/^[A-Za-z][A-Za-z0-9]*$/.test(failure.name)?failure.name:'Error';
+  const code=typeof failure.code==='string'&&/^[A-Z0-9_]{1,32}$/.test(failure.code)?` ${failure.code}`:'';
+  const stack=typeof failure.stack==='string'?failure.stack:'';
+  const line=stack.match(/test-rate-limit-postgres\.ts:(\d+):\d+/)?.[1];
+  console.error(`Rate-limit PostgreSQL checks failed${line?` at test-rate-limit-postgres.ts:${line}`:''} (${name}${code}); no connection details or credential material were emitted.`);
   process.exitCode = 1;
 });
