@@ -1,6 +1,6 @@
 # Security review plan and acceptance criteria
 
-**Review status: PRE-IMPLEMENTATION.** This is a planning document based on preliminary inspection of the application's structure. It is **not a completed code review** and does not claim that implementation changes, security tests, penetration tests, or deployment controls have been reviewed or passed. Findings below are risks to validate and remediate before release, not verified exploit results.
+**Review status: PENDING POST-IMPLEMENTATION EVIDENCE.** The contract-focused security regression suite has been added, but the v2 application implementation and its runtime test adapters are not present on this branch. This is **not a completed code review** and does not claim that implementation changes, security tests, penetration tests, or deployment controls have been reviewed or passed. Findings below remain open until retested against integrated implementation and production-like deployment evidence.
 
 ## Severity rubric
 
@@ -62,6 +62,20 @@ Tests should use isolated fixtures and assert both the response and persistence/
 17. **Cookie attributes / HTTPS:** Inspect cookies in production-like HTTPS mode for `Secure`, `HttpOnly`, explicit `SameSite`, `Path`, and expiry; confirm production does not issue authentication cookies over HTTP.
 18. **Log redaction:** Trigger authentication failures, database errors, and merge errors using sentinel secrets. Search captured application/proxy logs and responses; assert no password, token, cookie, capability, or sensitive query data appears.
 19. **Offline mode:** If supported, exercise simultaneous writes, interrupted writes, corrupt file behavior, file permissions, and mode selection. Verify unsupported production configuration fails closed.
+
+## Security test implementation status
+
+`tests/security/openapi-security.test.js` checks the merged OpenAPI/API contract for opaque session credentials, CSRF and same-origin requirements, mutation idempotency, absence of client-selected owner identifiers, schema bounds, roster uniqueness, score bounds, not-found semantics, and documented authentication throttling. It also checks for the known legacy tournament navigation GET routes. These are contract/static checks only; passing them would not prove runtime enforcement.
+
+Execution on this security-review branch: `npx --no-install jest --runInBand tests/security/openapi-security.test.js` reported **7 passed, 1 failed, 12 todo**. The sole failure is the expected legacy-method regression: `web/src/app.ts` still exposes `/tournament/next` and `/tournament/prev` as GET routes. The seven passing assertions validate only the contract; this result is not a remediation pass or release sign-off.
+
+The legacy code remains in the repository as read-only material, while the v2 `web/src/api`, `web/src/auth`, `web/src/config`, and `web/src/services` implementation paths are absent on this branch. Accordingly, the suite marks runtime cases `todo` rather than claiming coverage or remediation. The implementation/integration test owner must provide a disposable app + persistence adapter that can bootstrap the application under controlled environment variables, issue requests with independent cookie jars and origins, snapshot database/state before and after denied requests, run two app instances against shared persistence, capture logs, and select/test offline mode. It must not use production accounts or secrets.
+
+Runtime cases still requiring that adapter include startup with absent/weak secrets; capability spoofing, rotation and revocation; CSRF/same-origin rejection; foreign, duplicate, malformed and unowned roster IDs; runtime input bounds; SQL-hostile names; rate limits and proxy-header handling; cross-session/multi-instance tournament isolation; legacy GET behavior; log/error redaction; and offline-mode restriction. The current legacy source contains a fallback JWT secret (`web/src/lib/auth.ts`), module-global tournament state and state-changing `GET /tournament/next` and `GET /tournament/prev` routes (`web/src/app.ts`); these observations are not findings against a v2 implementation, but they must remain visible until the legacy surface is removed or secured.
+
+The API contract documents 429 responses for session bootstrap and authentication, but does not specify 429 response behavior for the other expensive/write endpoints covered by R-07. The API/backend owners should resolve the endpoint coverage and retry contract before runtime rate-limit tests are finalized. Offline-mode selection is likewise a deployment/runtime concern and needs an explicit production configuration test.
+
+No post-implementation evidence is recorded here. Do not mark any R-01 through R-12 item as remediated until the integrated code, supported persistence modes, and deployed configuration have been reviewed and the relevant tests rerun.
 
 ## Release-blocking requirements
 
