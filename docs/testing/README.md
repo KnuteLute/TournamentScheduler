@@ -13,7 +13,7 @@ Current root scripts:
 | `npm run build` | Build contracts, web server, and Vue SPA; the frontend build targets `web/public/app`. |
 | `npm run typecheck` | Typecheck each workspace. |
 | `npm run test:unit` | Root Jest plus web and frontend unit suites. |
-| `npm run test:integration` | Run `jest.integration.config.js` in-band, including `tests/integration/**`. |
+| `npm run test:integration` | Run `jest.integration.config.js` in-band, then `web`'s `test:api-store` and `test:rate-limit-postgres` PostgreSQL checks. |
 | `npm run test:security` | Run the security regression suite. |
 | `npm run test:e2e` | Run `playwright.config.ts` against the loopback app origin. |
 | `npm test` | Run unit, integration, security, and E2E suites. |
@@ -28,6 +28,7 @@ The app loads the repository-root `.env`. Create a local ignored `.env` for this
 
 - `NODE_ENV=test`, `DB_MODE=postgres`, and `PORT=4173` (optionally `HOST=127.0.0.1`; that is also the server default).
 - `POSTGRES_URL` must connect to a disposable, loopback PostgreSQL database. `TEST_DATABASE_NAME` must exactly match its database name, with a delimited `test`, `tests`, or `ci` marker. The integration preflight requires PostgreSQL 14 or newer.
+- `POSTGRES_TEST_DATABASE_URL` and `RATE_LIMIT_TEST_DATABASE_URL` must point to that same disposable database; the web-side PostgreSQL integration scripts read these dedicated names.
 - `API_ORIGIN=http://127.0.0.1:4173` so same-origin checks match the browser/API origin.
 - `API_SESSION_HASH_SECRET` must be a test-only value of at least 32 bytes (hex or base64url). Never reuse a production or shared secret.
 - `API_TRUSTED_PROXY_HOPS=0` for this directly bound local server; do not set a trusted proxy hop for local tests.
@@ -52,13 +53,15 @@ npm run test:integration
 npm run test:e2e
 ```
 
-The root `.env` supplies the server's `POSTGRES_URL`, `API_ORIGIN`, and session/proxy settings. `TEST_API_ORIGIN`, `E2E_BASE_URL`, `TEST_DATABASE_NAME`, and `TEST_ACCOUNT_PASSWORD` are test-runner settings and must point to/use the same disposable test setup. The SPA is served below `/app/`; Playwright uses the origin root and follows the server's redirect to `/app/`.
+The root `.env` supplies the server's `POSTGRES_URL`, `API_ORIGIN`, and session/proxy settings. `TEST_API_ORIGIN`, `E2E_BASE_URL`, `POSTGRES_TEST_DATABASE_URL`, `RATE_LIMIT_TEST_DATABASE_URL`, `TEST_DATABASE_NAME`, and `TEST_ACCOUNT_PASSWORD` are test-runner settings and must point to/use the same disposable test setup. The SPA is served below `/app/`; Playwright uses the origin root and follows the server's redirect to `/app/`.
 
 ## Persistence integration status and limits
 
-`web/src/app.ts` mounts `/api/v1` and serves the SPA; it delegates PostgreSQL operations to `./persistence/api-store`. That ApiStore PostgreSQL adapter is the critical integration boundary for these REST tests. The current checked-out tree does not contain `web/src/persistence/api-store.ts` (or an equivalent persistence implementation), `web/scripts/migrate.ts`, or a versioned migrations directory. Although the `db:migrate` script is declared above, its target and migration application are therefore not verified in this tree; do not substitute the legacy `web/scripts/init-db.ts` as the v2 migration path.
+`web/src/app.ts` mounts `/api/v1` and serves the SPA; it delegates PostgreSQL operations to `./persistence/api-store`. The PostgreSQL ApiStore, migration runner, and migrations `0001`–`0004` are present. `npm run db:migrate --prefix web` invokes `ts-node scripts/migrate.ts --apply`; the read-only status command reported versions 1–4 applied in the supplied test database. Do not substitute the legacy `web/scripts/init-db.ts` for this versioned migration path.
 
-Until the ApiStore and migration implementation are available and the PostgreSQL integration suite runs against them, the following remain unverified: schema bootstrap/application, session/owner persistence, player/team/tournament/match writes and reads, idempotency records, transaction rollback, ETag/concurrent-write behavior, account transfer, derived tournament/overall standings, and restart-safe isolation. The API router tests use mocked `ApiStore` implementations and are not evidence of PostgreSQL integration. The REST tests in this workstream also cannot pass against the current app until that adapter is present and wired.
+**Latest local integration attempt:** the root Jest REST suite compiled and ran but all 11 tests failed during guest bootstrap: `POST /api/v1/sessions` returned `500 internal-error`. A direct isolated ApiStore `session.createGuest` call returned PostgreSQL SQLSTATE `42P08` (ambiguous parameter type). The standalone `web` ApiStore PostgreSQL script also failed with its sanitized failure message. The PostgreSQL rate-limit script failed as well; a concurrent probe observed all 20 attempts allowed at a configured maximum of 5 while the stored counter stopped at 5. These are backend/persistence defects for the owning team to resolve; the QA assertions have not been weakened.
+
+Because session bootstrap fails, the REST suite did not verify session/owner writes, player/team/tournament/match operations, idempotency, transaction rollback, ETag/concurrent-write behavior, account transfer, derived standings, or restart-safe isolation. The API router tests use mocked `ApiStore` implementations and are not evidence of successful PostgreSQL integration. Rerun the root `npm run test:integration` after the ApiStore/session audit insert and rate-limit admission behavior are corrected.
 
 Do not report integration or E2E checks as passing unless they have been run against the disposable PostgreSQL service and running app. Keep browser recordings disabled; the Playwright config disables traces, screenshots, and video to avoid retaining session material or synthetic account details.
 

@@ -1,13 +1,36 @@
 import { randomUUID } from "node:crypto";
-import request = require("supertest");
-import type { SuperAgentTest, Test } from "supertest";
+import { expect } from "@jest/globals";
+import request from "supertest";
+import type { Test } from "supertest";
 import { syntheticPassword } from "./testing-env";
 
 export { syntheticPassword } from "./testing-env";
 
 const apiPrefix = "/api/v1";
 
-export type JsonRecord = Record<string, any>;
+export type JsonRecord = Record<string, unknown>;
+
+export interface ResourceRecord extends JsonRecord {
+  id: string;
+  name: string;
+}
+
+export interface TournamentRecord extends ResourceRecord {
+  __etag: string;
+}
+
+export interface SessionRepresentation {
+  kind: "guest" | "authenticated";
+  account: { id: string; username: string } | null;
+  csrfToken: string;
+  expiresAt: string;
+  pendingGuestClaim: boolean;
+}
+
+export interface AuthResult {
+  session: SessionRepresentation;
+  transfer: { status: "none" | "transferred" | "pending_conflicts" };
+}
 
 export function testOrigin(): string {
   const origin = process.env.TEST_API_ORIGIN;
@@ -72,7 +95,7 @@ export async function assertDisposablePostgres(): Promise<void> {
 }
 
 export class ApiClient {
-  readonly agent: SuperAgentTest;
+  readonly agent: ReturnType<typeof request.agent>;
   csrfToken = "";
   sessionEtag = "";
   private sessionCookie = "";
@@ -105,7 +128,7 @@ export class ApiClient {
     return test;
   }
 
-  async bootstrapGuest(): Promise<JsonRecord> {
+  async bootstrapGuest(): Promise<SessionRepresentation> {
     const response = await this.agent
       .post(this.path("/sessions"))
       .set("Origin", this.origin)
@@ -120,7 +143,7 @@ export class ApiClient {
     return response.body;
   }
 
-  async refreshSession(): Promise<JsonRecord> {
+  async refreshSession(): Promise<SessionRepresentation> {
     const response = await this.get("/session");
     expect(response.status).toBe(200);
     this.csrfToken = response.body.csrfToken;
@@ -129,7 +152,7 @@ export class ApiClient {
     return response.body;
   }
 
-  async register(username = syntheticUsername()): Promise<JsonRecord> {
+  async register(username = syntheticUsername()): Promise<AuthResult> {
     const response = await this.mutate("post", "/auth/register", {
       username,
       password: syntheticPassword(),
@@ -141,7 +164,7 @@ export class ApiClient {
     return response.body;
   }
 
-  async login(username: string, password = syntheticPassword()): Promise<JsonRecord> {
+  async login(username: string, password = syntheticPassword()): Promise<AuthResult> {
     const response = await this.mutate("post", "/auth/login", { username, password });
     expect(response.status).toBe(200);
     this.captureSessionCookie(response);
@@ -169,13 +192,13 @@ export class ApiClient {
     return test;
   }
 
-  async createPlayer(name: string): Promise<JsonRecord> {
+  async createPlayer(name: string): Promise<ResourceRecord> {
     const response = await this.mutate("post", "/players", { name });
     expect(response.status).toBe(201);
     return response.body;
   }
 
-  async createPlayers(names: string[]): Promise<JsonRecord[]> {
+  async createPlayers(names: string[]): Promise<ResourceRecord[]> {
     return Promise.all(names.map((name) => this.createPlayer(name)));
   }
 
@@ -183,7 +206,7 @@ export class ApiClient {
     playerIds: string[],
     mode: "1v1" | "2v2_rotating" = "1v1",
     name = `Synthetic cup ${randomUUID()}`,
-  ): Promise<JsonRecord> {
+  ): Promise<TournamentRecord> {
     const response = await this.mutate("post", "/tournaments", {
       name,
       mode,
@@ -194,7 +217,7 @@ export class ApiClient {
     return tournamentFromResponse(response);
   }
 
-  async startTournament(tournament: JsonRecord): Promise<{ body: JsonRecord; etag: string }> {
+  async startTournament(tournament: TournamentRecord): Promise<{ body: JsonRecord; etag: string }> {
     const response = await this.mutate("post", `/tournaments/${tournament.id}/start`, undefined, {
       ifMatch: this.sessionEtagForTournament(tournament),
     });
@@ -202,15 +225,15 @@ export class ApiClient {
     return { body: response.body, etag: response.headers.etag };
   }
 
-  private sessionEtagForTournament(tournament: JsonRecord): string {
-    const etag = tournament.__etag;
-    if (typeof etag === "string") return etag;
-    throw new Error("Use tournamentFromResponse() to retain the tournament ETag before start");
+  private sessionEtagForTournament(tournament: TournamentRecord): string {
+    return tournament.__etag;
   }
 }
 
-export function tournamentFromResponse(response: { body: JsonRecord; headers: Record<string, string> }): JsonRecord {
-  return { ...response.body, __etag: response.headers.etag };
+export function tournamentFromResponse(response: { body: ResourceRecord; headers: Record<string, string> }): TournamentRecord {
+  const etag = response.headers.etag;
+  if (!etag) throw new Error("Tournament create response must include an ETag");
+  return { ...response.body, __etag: etag };
 }
 
 export function syntheticUsername(): string {

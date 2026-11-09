@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { beforeAll, describe, expect, jest, test } from "@jest/globals";
 import {
   ApiClient,
   assertDisposablePostgres,
@@ -28,7 +29,12 @@ describe("REST API v1 — PostgreSQL integration and isolation", () => {
 
     expect(response.status).toBe(201);
     expect(response.headers["cache-control"]).toContain("no-store");
-    const cookieHeaders: string[] = response.headers["set-cookie"] ?? [];
+    const setCookieHeader = response.headers["set-cookie"];
+    const cookieHeaders = Array.isArray(setCookieHeader)
+      ? setCookieHeader
+      : setCookieHeader
+        ? [setCookieHeader]
+        : [];
     const cookie = cookieHeaders.find((value) => value.startsWith("__Host-ts_session="));
     const attributes = cookie?.split(";").slice(1).join(";").toLowerCase() ?? "";
     expect(Boolean(cookie)).toBe(true);
@@ -336,7 +342,9 @@ describe("REST API v1 — PostgreSQL integration and isolation", () => {
     const existing = await owner.client.createPlayer("Åsa Claim Collision");
     const pending = await guestFixture();
     const guestPlayer = await pending.client.createPlayer("  A\u030Asa Claim Collision ");
-    const login = await pending.client.login(auth.session.account.username, syntheticPassword());
+    const accountUsername = auth.session.account?.username;
+    if (!accountUsername) throw new Error("Registration response must include the authenticated account");
+    const login = await pending.client.login(accountUsername, syntheticPassword());
     expect(login.session.pendingGuestClaim).toBe(true);
     expect(login.transfer.status).toBe("pending_conflicts");
 
