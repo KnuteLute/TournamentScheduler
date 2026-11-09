@@ -177,6 +177,11 @@ export async function runPersistenceUnitTests(): Promise<void> {
     assert.strictEqual((await fs.stat(directory)).mode & 0o777, 0o700);
     await fs.writeFile(file.filePath, '{broken');
     await assert.rejects(() => file.read(), LocalJsonCorruptError);
+    const corruptCurrent=await fs.readFile(file.filePath);
+    const validBackup=await fs.readFile(`${file.filePath}.bak`);
+    await assert.rejects(()=>file.write({value:3}),LocalJsonCorruptError);
+    assert.deepStrictEqual(await fs.readFile(file.filePath),corruptCurrent,'failed write preserves corrupt current data for operator review');
+    assert.deepStrictEqual(await fs.readFile(`${file.filePath}.bak`),validBackup,'failed write preserves the last known-good backup');
     await fs.writeFile(`${file.filePath}.lock`, 'operator-review');
     await assert.rejects(() => file.write({ value: 3 }), /Another local JSON writer/);
     await fs.unlink(`${file.filePath}.lock`);

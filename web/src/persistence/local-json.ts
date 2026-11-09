@@ -103,16 +103,8 @@ export class AtomicLocalJsonFile<T> {
     const backupPath = `${this.filePath}.bak`;
     const backupTemporaryPath = `${backupPath}.${randomUUID()}.tmp`;
     try {
-      const content = `${JSON.stringify(value, null, 2)}\n`;
-      const output = await fs.open(temporaryPath, 'wx', 0o600);
-      try {
-        await output.writeFile(content, 'utf8');
-        await output.sync();
-      } finally {
-        await output.close();
-      }
-
       let existing = false;
+      let previousData: Buffer | undefined;
       try {
         const stat = await fs.lstat(this.filePath);
         if (stat.isSymbolicLink() || !stat.isFile()) throw new LocalJsonModeRejectedError('Local data path must be a regular file');
@@ -122,13 +114,29 @@ export class AtomicLocalJsonFile<T> {
       }
       if (existing) {
         const source = await fs.open(this.filePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-        let previousData: Buffer;
         try {
           if (!(await source.stat()).isFile()) throw new LocalJsonModeRejectedError('Local data path must be a regular file');
           previousData = await source.readFile();
         } finally {
           await source.close();
         }
+        try {
+          JSON.parse(previousData.toString('utf8'));
+        } catch {
+          throw new LocalJsonCorruptError();
+        }
+      }
+
+      const content = `${JSON.stringify(value, null, 2)}\n`;
+      const output = await fs.open(temporaryPath, 'wx', 0o600);
+      try {
+        await output.writeFile(content, 'utf8');
+        await output.sync();
+      } finally {
+        await output.close();
+      }
+
+      if (previousData) {
         const backup = await fs.open(backupTemporaryPath, 'wx', 0o600);
         try {
           await backup.writeFile(previousData);

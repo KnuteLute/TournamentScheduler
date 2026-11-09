@@ -348,6 +348,7 @@ export class PostgresApiStore implements ApiStore {
       windowMs: request.windowMs,
       maximum: request.maximum,
     } satisfies RateLimitConsumeInput);
+    await this.database.pruneExpiredRateLimitBuckets({ batchSize: 20 });
     return decision;
   }
 
