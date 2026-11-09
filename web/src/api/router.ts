@@ -1,0 +1,586 @@
+import bcrypt from "bcrypt";
+import express, { type NextFunction, type Request, type Response, type Router } from "express";
+import { createHmac, randomUUID } from "node:crypto";
+import type { ApiConfig } from "../config/api";
+import {
+	constantTimeEqual,
+	csrfForSession,
+	expiredSessionCookie,
+	newOpaqueCredential,
+	protectedHash,
+	readSessionCookie,
+	sessionCookie,
+} from "../auth/credentials";
+import {
+	ApiProblem,
+	problemMiddleware,
+	sendProblem,
+} from "./problem";
+import { bodyValidators, validateQuery, type JsonObject } from "./validation";
+import { StoreUnavailableError } from "../services/ports";
+import type {
+	ApiStore,
+	SessionRecord,
+	StoreIdempotency,
+	StoreOperation,
+	StoreRequest,
+	StoreResult,
+	VerifiedActor,
+} from "../services/ports";
+
+declare global {
+	namespace Express {
+		interface Request {
+			apiSession?: SessionRecord;
+			apiCredential?: string;
+			apiCookiePresent?: boolean;
+			traceId?: string;
+		}
+	}
+}
+
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+function actorFrom(session: SessionRecord): VerifiedActor {
+	return {
+		sessionId: session.id,
+		ownerId: session.ownerId,
+		kind: session.kind,
+		account: session.account,
+	};
+}
+
+function fail(status: number, code: string, title: string, detail = title): never {
+	throw new ApiProblem(status, code, title, detail);
+}
+
+function requireSession(req: Request): SessionRecord {
+	if (!req.apiSession) fail(401, "unauthorized", "Unauthorized", "A valid session is required.");
+	return req.apiSession;
+}
+
+function expectedETag(req: Request, required: boolean): string | undefined {
+	const value = req.get("If-Match");
+	if (!value) {
+		if (required) fail(428, "precondition-required", "Precondition Required", "If-Match is required.");
+		return undefined;
+	}
+	if (value.length > 200 || value.startsWith("W/") || value === "*" || !/^"[A-Za-z0-9._:-]+"$/.test(value)) {
+		fail(400, "invalid-if-match", "Bad Request", "If-Match must contain one strong entity tag.");
+	}
+	return value;
+}
+
+function stableJson(value: unknown): string {
+	if (value === null || typeof value !== "object") return JSON.stringify(value);
+	if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+	const record = value as Record<string, unknown>;
+	return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+}
+
+function requestHash(req: Request, config: ApiConfig, body: unknown): string {
+	return createHmac("sha256", config.sessionHashSecret)
+		.update(req.method)
+		.update("\n")
+		.update(req.path)
+		.update("\n")
+		.update(stableJson(body ?? null))
+		.digest("hex");
+}
+
+function idempotency(req: Request, operation: StoreOperation, config: ApiConfig, body: unknown, anchor: StoreIdempotency["anchor"] = "actor-owner"): StoreIdempotency {
+	const key = req.get("Idempotency-Key");
+	if (!key || key.length < 16 || key.length > 200 || !/^[\x21-\x7e]+$/.test(key)) {
+		fail(400, "idempotency-key-required", "Bad Request", "A valid Idempotency-Key is required.");
+	}
+	return { key, requestHash: requestHash(req, config, body), anchor };
+}
+
+function setETag(res: Response, result: StoreResult<unknown>): void {
+	if (result.etag) {
+		const tag = result.etag.startsWith('"') ? result.etag : `"${result.etag}"`;
+		if (/^"[A-Za-z0-9._:-]+"$/.test(tag)) res.set("ETag", tag);
+		return;
+	}
+	const value = result.value as { version?: unknown } | null;
+	if (value && typeof value === "object" && Number.isSafeInteger(value.version) && Number(value.version) > 0) {
+		res.set("ETag", `"v${String(value.version)}"`);
+	}
+}
+
+const PRIVATE_RESPONSE_FIELDS = new Set([
+	"owner", "ownerid", "ownerscope", "internalowner", "userid", "accountid", "guestid", "guestsessionid", "sessionid",
+	"password", "passwordhash", "token", "rawtoken", "tokenhash", "csrfhash",
+	"csrftokenhash", "csrftoken", "sessiontoken", "authorization", "__proto__", "constructor", "prototype",
+]);
+
+function publicRepresentation(value: unknown): unknown {
+	if (value instanceof Date) return value.toISOString();
+	if (value instanceof Uint8Array) return undefined;
+	if (Array.isArray(value)) return value.map((item) => publicRepresentation(item));
+	if (value === null || typeof value !== "object") return value;
+	const result: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+	for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+		if (PRIVATE_RESPONSE_FIELDS.has(key.toLocaleLowerCase("en-US").replace(/[_-]/g, ""))) continue;
+		const safeValue = publicRepresentation(item);
+		if (safeValue !== undefined) result[key] = safeValue;
+	}
+	return result;
+}
+
+function queryObject(req: Request): Record<string, unknown> {
+	const result: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(req.query)) result[key] = value;
+	return result;
+}
+
+function validatePathId(value: string | undefined, field: string): string {
+	if (!value || value.length > 128 || /[\u0000-\u001f\u007f]/.test(value)) {
+		fail(400, "invalid-id", "Bad Request", `${field} is not a valid opaque ID.`);
+	}
+	return value;
+}
+
+function ensureSameOrigin(req: Request, config: ApiConfig): void {
+	const fetchSite = req.get("Sec-Fetch-Site");
+	if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+		fail(403, "csrf-rejected", "Forbidden", "Cross-site requests are not allowed.");
+	}
+	const origin = req.get("Origin");
+	if (origin) {
+		if (origin === "null" || origin !== config.origin) fail(403, "csrf-rejected", "Forbidden", "Request origin is not allowed.");
+		return;
+	}
+	const referer = req.get("Referer");
+	if (referer) {
+		let refererOrigin: string;
+		try {
+			refererOrigin = new URL(referer).origin;
+		} catch {
+			fail(403, "csrf-rejected", "Forbidden", "Request origin is not allowed.");
+		}
+		if (refererOrigin !== config.origin) fail(403, "csrf-rejected", "Forbidden", "Request origin is not allowed.");
+		return;
+	}
+	fail(403, "csrf-rejected", "Forbidden", "Origin or same-origin Referer is required.");
+}
+
+function csrfCheck(req: Request, config: ApiConfig, optionalBootstrap: boolean): void {
+	ensureSameOrigin(req, config);
+	if (!req.apiCookiePresent && optionalBootstrap) return;
+	const session = requireSession(req);
+	const token = req.get("X-CSRF-Token");
+	if (!token || token.length < 32 || token.length > 256) fail(403, "csrf-rejected", "Forbidden", "A valid CSRF token is required.");
+	const actual = protectedHash(token, config);
+	if (!constantTimeEqual(actual, session.csrfTokenHash)) fail(403, "csrf-rejected", "Forbidden", "A valid CSRF token is required.");
+}
+
+function asyncRoute(handler: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
+	return (req: Request, res: Response, next: NextFunction) => {
+		void handler(req, res, next).catch(next);
+	};
+}
+
+function addRateLimit(router: Router, store: ApiStore, config: ApiConfig): void {
+	router.use((req, res, next) => {
+		if (req.path === "/health") {
+			next();
+			return;
+		}
+		// Deliberately use the TCP peer. X-Forwarded-For is attacker-controlled
+		// unless the host configures a trusted proxy chain, which this router does not.
+		const peer = req.socket.remoteAddress ?? "unknown";
+		const auth = req.path === "/auth/login" || req.path === "/auth/register";
+		const bucketHash = createHmac("sha256", config.sessionHashSecret)
+			.update(`rate-network:${auth ? "auth" : "api"}:${peer}`)
+			.digest("hex");
+		void store.consumeRateLimit({
+			bucketHash,
+			now: new Date(),
+			windowMs: config.rateLimitWindowMs,
+			maximum: auth ? config.loginRateLimitMax : config.rateLimitMax,
+		}).then((decision) => {
+			if (typeof decision.allowed !== "boolean" || !Number.isSafeInteger(decision.retryAfterSeconds) || decision.retryAfterSeconds < 0) {
+				throw new Error("Invalid rate-limit decision");
+			}
+			if (!decision.allowed) {
+				res.set("Retry-After", String(Math.max(1, decision.retryAfterSeconds)));
+				sendProblem(res, new ApiProblem(429, "rate-limited", "Too Many Requests", "Request rate limit exceeded."), req.traceId);
+				return;
+			}
+			next();
+		}).catch(next);
+	});
+}
+
+/** Create a mountable router; mount this only beneath `/api/v1` in the host app. */
+export function createApiRouter(store: ApiStore, config: ApiConfig): Router {
+	if (!store || typeof store.lookupSessionByTokenHash !== "function" || typeof store.findAccountByUsernameKey !== "function" || typeof store.consumeRateLimit !== "function" || typeof store.execute !== "function") {
+		throw new Error("A complete API store implementation is required");
+	}
+	if (!config || config.sessionHashSecret.byteLength < 32) {
+		throw new Error("API store and a strong session hash secret are required");
+	}
+	let configuredOrigin: URL;
+	try {
+		configuredOrigin = new URL(config.origin);
+	} catch {
+		throw new Error("A valid API origin is required");
+	}
+	if (configuredOrigin.origin !== config.origin || (config.production && configuredOrigin.protocol !== "https:")) {
+		throw new Error("API origin must be canonical and use HTTPS in production");
+	}
+	if (!Number.isSafeInteger(config.sessionLifetimeMs) || config.sessionLifetimeMs < 60_000 ||
+		config.sessionLifetimeMs > 1000 * 60 * 60 * 24 * 90 ||
+		!Number.isSafeInteger(config.maxBodyBytes) || config.maxBodyBytes < 1024 || config.maxBodyBytes > 1024 * 1024 ||
+		!Number.isSafeInteger(config.rateLimitWindowMs) || config.rateLimitWindowMs < 1000 || config.rateLimitWindowMs > 60 * 60 * 1000 ||
+		!Number.isSafeInteger(config.rateLimitMax) || config.rateLimitMax < 1 || config.rateLimitMax > 10_000 ||
+		!Number.isSafeInteger(config.loginRateLimitMax) || config.loginRateLimitMax < 1 || config.loginRateLimitMax > 1000 ||
+		!Number.isSafeInteger(config.bcryptRounds) || config.bcryptRounds < 10 || config.bcryptRounds > 15) {
+		throw new Error("Invalid API security limits");
+	}
+	const router = express.Router();
+	const authHashSlots = { active: 0 };
+	const dummyPasswordHash = bcrypt.hashSync(randomUUID(), config.bcryptRounds);
+	router.use((_req, res, next) => {
+		res.set("X-Content-Type-Options", "nosniff");
+		res.set("X-Frame-Options", "DENY");
+		res.set("Referrer-Policy", "no-referrer");
+		res.set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
+		if (config.production) res.set("Strict-Transport-Security", "max-age=31536000");
+		next();
+	});
+	addRateLimit(router, store, config);
+	router.use((req, _res, next) => {
+		req.traceId = randomUUID();
+		next();
+	});
+	router.use((req, _res, next) => {
+		const hasBody = Number(req.get("Content-Length") ?? 0) > 0 || Boolean(req.get("Transfer-Encoding"));
+		if ((req.method === "GET" || req.method === "HEAD") && hasBody) {
+			next(new ApiProblem(400, "unexpected-body", "Bad Request", "Read-only requests do not accept a request body."));
+			return;
+		}
+		if (hasBody && req.get("Content-Encoding") && req.get("Content-Encoding") !== "identity") {
+			next(new ApiProblem(415, "unsupported-content-encoding", "Unsupported Media Type", "Compressed request bodies are not accepted."));
+			return;
+		}
+		if (MUTATING_METHODS.has(req.method) && hasBody) {
+			const mediaType = req.method === "PATCH" ? "application/merge-patch+json" : "application/json";
+			if (!req.is(mediaType)) {
+				next(new ApiProblem(415, "unsupported-media-type", "Unsupported Media Type", `Use ${mediaType}.`));
+				return;
+			}
+		}
+		next();
+	});
+	router.use(express.json({
+		limit: config.maxBodyBytes,
+		strict: true,
+		type: ["application/json", "application/merge-patch+json"],
+	}));
+	router.use(asyncRoute(async (req, _res, next) => {
+		const parsed = readSessionCookie(req.headers.cookie);
+		req.apiCookiePresent = parsed.present;
+		if (parsed.value) req.apiCredential = parsed.value;
+		if (parsed.present && !parsed.value) {
+			// An invalid/present credential is never treated as an anonymous bootstrap.
+			if (req.path === "/auth/login" || req.path === "/auth/register" || req.path === "/sessions") {
+				fail(401, "unauthorized", "Unauthorized", "The supplied session is invalid.");
+			}
+		}
+		if (parsed.value) {
+			const found = await store.lookupSessionByTokenHash(protectedHash(parsed.value, config), new Date());
+			if (!found || found.revokedAt || found.expiresAt.getTime() <= Date.now()) {
+				if (req.path === "/auth/login" || req.path === "/auth/register" || req.path === "/sessions") {
+					fail(401, "unauthorized", "Unauthorized", "The supplied session is invalid.");
+				}
+			} else {
+				req.apiSession = found;
+			}
+		}
+		next();
+	}));
+
+	const run = async <T>(req: Request, operation: StoreOperation, settings: {
+		body?: JsonObject;
+		query?: Record<string, string | number | readonly string[]>;
+		resourceId?: string;
+		matchId?: string;
+		mutating?: boolean;
+		precondition?: boolean;
+		status?: number;
+		anchor?: StoreIdempotency["anchor"];
+		credentials?: StoreRequest["credentials"];
+	} = {}): Promise<StoreResult<T>> => {
+		if (operation !== "session.createGuest" && operation !== "auth.login" && operation !== "auth.register" && !req.apiSession) {
+			fail(401, "unauthorized", "Unauthorized", "A valid session is required.");
+		}
+		let idem: StoreIdempotency | undefined;
+		let tag: string | undefined;
+		if (settings.mutating) {
+			csrfCheck(req, config, operation === "auth.login" || operation === "auth.register" || operation === "session.createGuest");
+			if (operation !== "session.createGuest") {
+				idem = idempotency(req, operation, config, settings.body, settings.anchor);
+			}
+		}
+		if (settings.precondition) tag = expectedETag(req, true);
+		const actor = req.apiSession ? actorFrom(req.apiSession) : null;
+		const request: StoreRequest = {
+			operation,
+			actor,
+			...(settings.resourceId === undefined ? {} : { resourceId: settings.resourceId }),
+			...(settings.matchId === undefined ? {} : { matchId: settings.matchId }),
+			...(settings.query === undefined ? {} : { query: settings.query }),
+			...(settings.body === undefined ? {} : { input: settings.body }),
+			...(tag === undefined ? {} : { expectedETag: tag }),
+			...(idem === undefined ? {} : { idempotency: idem }),
+			...(settings.credentials === undefined ? {} : { credentials: settings.credentials }),
+		};
+		return store.execute<T>(request);
+	};
+
+	const sendResult = (res: Response, result: StoreResult<unknown>, status = result.status ?? 200, requireETag = false) => {
+		setETag(res, result);
+		if (requireETag && !res.getHeader("ETag")) throw new StoreUnavailableError();
+		if (status === 204) {
+			res.status(204).end();
+			return;
+		}
+		res.status(status).json(publicRepresentation(result.value));
+	};
+
+	const resource = (method: "get" | "post" | "patch" | "delete", path: string, operation: StoreOperation, options: {
+		mutating?: boolean;
+		precondition?: boolean;
+		body?: boolean;
+		query?: readonly string[];
+		requiredQuery?: string;
+		status?: number;
+		resourceParam?: string;
+		matchParam?: string;
+		noContent?: boolean;
+		requireETag?: boolean;
+	} = {}) => {
+		router[method](path, asyncRoute(async (req, res) => {
+			requireSession(req);
+			if (options.mutating) csrfCheck(req, config, false);
+			if (options.body && req.body === undefined) fail(400, "body-required", "Bad Request", "A JSON request body is required.");
+			const bodyValidator = bodyValidators[operation];
+			const input = bodyValidator ? bodyValidator(req.body) : undefined;
+			if (options.body && !bodyValidator) fail(500, "internal-error", "Internal Server Error");
+			const query = options.query ? validateQuery(queryObject(req), options.query) : undefined;
+			if (query?.status) {
+				const values = query.status as readonly string[];
+				const allowed = operation === "tournaments.list"
+					? ["draft", "active", "paused", "completed", "cancelled"]
+					: ["scheduled", "in_progress", "paused", "completed", "skipped"];
+				if (values.some((value) => !allowed.includes(value))) {
+					fail(400, "invalid-query", "Bad Request", "Status contains a value not supported by this resource.");
+				}
+			}
+			if (options.requiredQuery && (!query || query[options.requiredQuery] === undefined)) {
+				fail(400, "missing-query", "Bad Request", `${options.requiredQuery} is required.`);
+			}
+			if (query && options.query && options.query.includes("limit") && query.limit === undefined) query.limit = 25;
+			const resourceId = options.resourceParam ? validatePathId(req.params[options.resourceParam], options.resourceParam) : undefined;
+			const matchId = options.matchParam ? validatePathId(req.params[options.matchParam], options.matchParam) : undefined;
+			const result = await run(req, operation, {
+				...(input === undefined ? {} : { body: input }),
+				...(query === undefined ? {} : { query }),
+				...(resourceId === undefined ? {} : { resourceId }),
+				...(matchId === undefined ? {} : { matchId }),
+				...(options.mutating ? { mutating: true } : {}),
+				...(options.precondition ? { precondition: true } : {}),
+			});
+			if (options.noContent) {
+				res.status(204).end();
+				return;
+			}
+			sendResult(res, result, options.status, options.requireETag);
+		}));
+	};
+
+	router.get("/health", asyncRoute(async (_req, res) => {
+		const healthy = store.healthCheck ? await store.healthCheck() : false;
+		if (!healthy) {
+			sendProblem(res, new ApiProblem(503, "service-unavailable", "Service Unavailable", "The API data service is unavailable."));
+			return;
+		}
+		res.status(200).json({ status: "ok" });
+	}));
+
+	router.post("/sessions", asyncRoute(async (req, res) => {
+		csrfCheck(req, config, true);
+		if (req.apiCookiePresent) fail(409, "session-exists", "Conflict", "A session cookie is already present.");
+		bodyValidators["session.createGuest"]!(req.body);
+		const token = newOpaqueCredential();
+		const csrfToken = csrfForSession(token, config);
+		const expiresAt = new Date(Date.now() + config.sessionLifetimeMs);
+		const result = await run<Record<string, unknown>>(req, "session.createGuest", {
+			mutating: true,
+			credentials: {
+				sessionTokenHash: protectedHash(token, config),
+				csrfTokenHash: protectedHash(csrfToken, config),
+				sessionExpiresAt: expiresAt,
+			},
+		});
+		res.set("Set-Cookie", sessionCookie(token, expiresAt));
+		res.set("Cache-Control", "no-store");
+		setETag(res, result);
+		const session = { ...((publicRepresentation(result.value) as Record<string, unknown> | null) ?? {}), kind: "guest", account: null, csrfToken, expiresAt: expiresAt.toISOString(), pendingGuestClaim: false };
+		res.status(201).json(session);
+	}));
+
+	router.get("/session", asyncRoute(async (req, res) => {
+		const session = requireSession(req);
+		const result = await run<Record<string, unknown>>(req, "session.get");
+		res.set("Cache-Control", "no-store");
+		setETag(res, { ...result, etag: result.etag ?? `v${session.version}` });
+		const csrfToken = req.apiCredential ? csrfForSession(req.apiCredential, config) : "";
+		if (!constantTimeEqual(protectedHash(csrfToken, config), session.csrfTokenHash)) {
+			fail(401, "unauthorized", "Unauthorized", "The supplied session is invalid.");
+		}
+		res.json({ ...((publicRepresentation(result.value) as Record<string, unknown> | null) ?? {}), kind: session.kind, account: session.account, csrfToken, expiresAt: session.expiresAt.toISOString(), pendingGuestClaim: session.pendingGuestClaim });
+	}));
+
+	const revoke = asyncRoute(async (req, res) => {
+		const result = await run(req, req.path === "/auth/logout" ? "auth.logout" : "session.revoke", { mutating: true });
+		res.set("Set-Cookie", expiredSessionCookie());
+		res.status(204).end();
+		void result;
+	});
+	router.delete("/session", revoke);
+	router.post("/auth/logout", revoke);
+
+	const auth = (kind: "register" | "login") => asyncRoute(async (req, res) => {
+		csrfCheck(req, config, true);
+		const input = bodyValidators[`auth.${kind}`]!(req.body) as { username: string; password: string };
+		const idem = idempotency(req, `auth.${kind}`, config, { username: input.username, password: input.password }, kind === "register" ? "new-owner" : "verified-owner");
+		const usernameKey = input.username.normalize("NFKC").trim().replace(/\s+/gu, " ").toLocaleLowerCase("und");
+		const accountRateKey = createHmac("sha256", config.sessionHashSecret).update(`auth-account:${usernameKey}`).digest("hex");
+		const accountLimit = await store.consumeRateLimit({
+			bucketHash: accountRateKey,
+			now: new Date(),
+			windowMs: config.rateLimitWindowMs,
+			maximum: config.loginRateLimitMax,
+		});
+		if (typeof accountLimit.allowed !== "boolean" || !Number.isSafeInteger(accountLimit.retryAfterSeconds) || accountLimit.retryAfterSeconds < 0) {
+			throw new Error("Invalid account rate-limit decision");
+		}
+		if (!accountLimit.allowed) {
+			res.set("Retry-After", String(Math.max(1, accountLimit.retryAfterSeconds)));
+			fail(429, "rate-limited", "Too Many Requests", "Authentication rate limit exceeded.");
+		}
+		let account;
+		let passwordHash: string | undefined;
+		const hashSlot = authHashSlots;
+		if (hashSlot.active >= 8) {
+			res.set("Retry-After", "1");
+			fail(429, "rate-limited", "Too Many Requests", "Authentication work is temporarily busy.");
+		}
+		hashSlot.active += 1;
+		try {
+			if (kind === "login") {
+				account = await store.findAccountByUsernameKey(usernameKey);
+				let passwordMatches = false;
+				try {
+					passwordMatches = await bcrypt.compare(input.password, account?.passwordHash ?? dummyPasswordHash);
+				} catch {
+					passwordMatches = false;
+				}
+				if (!account || !passwordMatches) fail(401, "invalid-credentials", "Unauthorized", "Username or password is incorrect.");
+			} else {
+				passwordHash = await bcrypt.hash(input.password, config.bcryptRounds);
+			}
+		} finally {
+			hashSlot.active -= 1;
+		}
+		const token = newOpaqueCredential();
+		const csrfToken = csrfForSession(token, config);
+		const expiresAt = new Date(Date.now() + config.sessionLifetimeMs);
+		const safeInput = { username: input.username, usernameKey };
+		const request: StoreRequest = {
+			operation: `auth.${kind}`,
+			actor: req.apiSession ? actorFrom(req.apiSession) : null,
+			input: safeInput,
+			idempotency: idem,
+			credentials: {
+				sessionTokenHash: protectedHash(token, config),
+				csrfTokenHash: protectedHash(csrfToken, config),
+				sessionExpiresAt: expiresAt,
+				...(passwordHash ? { passwordHash } : {}),
+			},
+		};
+		const result = await store.execute<Record<string, unknown>>(request);
+		res.set("Set-Cookie", sessionCookie(token, expiresAt));
+		res.set("Cache-Control", "no-store");
+		setETag(res, result);
+		const payload = (publicRepresentation(result.value) as Record<string, unknown> | null) ?? {};
+		const sessionValue = payload.session && typeof payload.session === "object" ? payload.session as Record<string, unknown> : {};
+		res.status(kind === "register" ? 201 : 200).json({
+			...payload,
+			session: { ...sessionValue, kind: "authenticated", account: account ? { id: account.id, username: account.username } : sessionValue.account, csrfToken, expiresAt: expiresAt.toISOString() },
+		});
+	});
+	router.post("/auth/register", auth("register"));
+	router.post("/auth/login", auth("login"));
+
+	router.post("/session/claim", asyncRoute(async (req, res) => {
+		const session = requireSession(req);
+		if (session.kind !== "authenticated") fail(409, "claim-unavailable", "Conflict", "An authenticated session is required to claim guest data.");
+		csrfCheck(req, config, false);
+		const input = bodyValidators["session.claimGuest"]!(req.body) as JsonObject;
+		const result = await run(req, "session.claimGuest", { body: input, mutating: true, precondition: true });
+		res.set("Cache-Control", "no-store");
+		sendResult(res, result, result.status ?? 200, true);
+	}));
+
+	resource("get", "/players", "players.list", { query: ["limit", "cursor", "q"] });
+	resource("post", "/players", "players.create", { body: true, mutating: true, status: 201, requireETag: true });
+	resource("get", "/players/:playerId", "players.get", { resourceParam: "playerId", requireETag: true });
+	resource("patch", "/players/:playerId", "players.update", { body: true, mutating: true, precondition: true, resourceParam: "playerId", requireETag: true });
+	resource("delete", "/players/:playerId", "players.delete", { mutating: true, precondition: true, resourceParam: "playerId", noContent: true });
+
+	resource("get", "/teams", "teams.list", { query: ["limit", "cursor"] });
+	resource("post", "/teams", "teams.create", { body: true, mutating: true, status: 201, requireETag: true });
+	resource("get", "/teams/:teamId", "teams.get", { resourceParam: "teamId", requireETag: true });
+	resource("patch", "/teams/:teamId", "teams.update", { body: true, mutating: true, precondition: true, resourceParam: "teamId", requireETag: true });
+	resource("delete", "/teams/:teamId", "teams.delete", { mutating: true, precondition: true, resourceParam: "teamId", noContent: true });
+
+	resource("get", "/tournaments", "tournaments.list", { query: ["limit", "cursor", "status"] });
+	resource("post", "/tournaments", "tournaments.create", { body: true, mutating: true, status: 201, requireETag: true });
+	resource("get", "/tournaments/:tournamentId", "tournaments.get", { resourceParam: "tournamentId", requireETag: true });
+	resource("patch", "/tournaments/:tournamentId", "tournaments.updateDraft", { body: true, mutating: true, precondition: true, resourceParam: "tournamentId", requireETag: true });
+	resource("delete", "/tournaments/:tournamentId", "tournaments.deleteDraft", { mutating: true, precondition: true, resourceParam: "tournamentId", noContent: true });
+	resource("post", "/tournaments/:tournamentId/start", "tournaments.start", { mutating: true, precondition: true, resourceParam: "tournamentId", requireETag: true });
+	resource("post", "/tournaments/:tournamentId/cancel", "tournaments.cancel", { mutating: true, precondition: true, resourceParam: "tournamentId", requireETag: true });
+	resource("post", "/tournaments/:tournamentId/pause", "tournaments.pause", { mutating: true, precondition: true, resourceParam: "tournamentId", requireETag: true });
+	resource("post", "/tournaments/:tournamentId/resume", "tournaments.resume", { mutating: true, precondition: true, resourceParam: "tournamentId", requireETag: true });
+	resource("post", "/tournaments/:tournamentId/finish", "tournaments.finish", { mutating: true, precondition: true, resourceParam: "tournamentId", requireETag: true });
+	resource("patch", "/tournaments/:tournamentId/availability", "tournaments.updateAvailability", { body: true, mutating: true, precondition: true, resourceParam: "tournamentId", requireETag: true });
+	resource("get", "/tournaments/:tournamentId/matches", "tournaments.listMatches", { query: ["limit", "cursor", "status"], resourceParam: "tournamentId" });
+	resource("get", "/tournaments/:tournamentId/schedule", "tournaments.getSchedule", { resourceParam: "tournamentId", requireETag: true });
+	resource("get", "/tournaments/:tournamentId/standings", "tournaments.getStandings", { query: ["view"], requiredQuery: "view", resourceParam: "tournamentId", requireETag: true });
+	resource("get", "/standings", "standings.getOverall", { query: ["view"], requiredQuery: "view", requireETag: true });
+	resource("get", "/tournaments/:tournamentId/matches/:matchId", "matches.get", { resourceParam: "tournamentId", matchParam: "matchId", requireETag: true });
+	resource("post", "/tournaments/:tournamentId/matches/:matchId/start", "matches.start", { mutating: true, precondition: true, resourceParam: "tournamentId", matchParam: "matchId", requireETag: true });
+	resource("post", "/tournaments/:tournamentId/matches/:matchId/pause", "matches.pause", { mutating: true, precondition: true, resourceParam: "tournamentId", matchParam: "matchId", requireETag: true });
+	resource("post", "/tournaments/:tournamentId/matches/:matchId/resume", "matches.resume", { mutating: true, precondition: true, resourceParam: "tournamentId", matchParam: "matchId", requireETag: true });
+	resource("post", "/tournaments/:tournamentId/matches/:matchId/result", "matches.recordResult", { body: true, mutating: true, precondition: true, resourceParam: "tournamentId", matchParam: "matchId", requireETag: true });
+	resource("post", "/tournaments/:tournamentId/matches/:matchId/skip", "matches.skip", { mutating: true, precondition: true, resourceParam: "tournamentId", matchParam: "matchId", requireETag: true });
+
+	router.use((req, res) => {
+		res.status(404).type("application/problem+json").json({
+			type: "https://api.tournament-scheduler.invalid/problems/not-found",
+			title: "Not Found",
+			status: 404,
+			detail: "The requested API route was not found.",
+			code: "not-found",
+			instance: req.path,
+			traceId: req.traceId ?? randomUUID(),
+		});
+	});
+	router.use(problemMiddleware);
+	return router;
+}
