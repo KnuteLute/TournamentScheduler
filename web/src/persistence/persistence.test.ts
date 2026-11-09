@@ -8,8 +8,9 @@ import { canonicalizeName, NAME_CANONICALIZATION_VERSION } from '../domain/names
 import { readMigrations } from './migrations';
 import { Queryable } from './database';
 import { consumeRateLimitBucket, pruneExpiredRateLimitBuckets } from './rate-limit';
-import { createPostgresApiStore } from './api-store';
+import { createPostgresApiStore, serializePlayerResponse, serializeStandingRows, serializeTeamResponse } from './api-store';
 import { DEFAULT_POSTGRES_IMPORT_BATCH_SIZE, MAX_POSTGRES_IMPORT_BATCH_SIZE } from './legacy-import';
+import { computeTournamentStandings } from '../domain/standings';
 
 export async function runPersistenceUnitTests(): Promise<void> {
   assert.strictEqual(canonicalizeName('  Straße\tTEAM  '), 'strasse team');
@@ -18,6 +19,20 @@ export async function runPersistenceUnitTests(): Promise<void> {
   assert.strictEqual(DEFAULT_POSTGRES_IMPORT_BATCH_SIZE,250);
   assert.strictEqual(MAX_POSTGRES_IMPORT_BATCH_SIZE,1_000);
   assert.strictEqual(NAME_CANONICALIZATION_VERSION, 'nfkc-casefold-whitespace-v1');
+
+  const createdAt=new Date('2029-01-01T00:00:00.000Z');
+  const updatedAt=new Date('2029-01-02T00:00:00.000Z');
+  const playerResponse=serializePlayerResponse({id:9,name:'A player',created_at:createdAt,updated_at:updatedAt});
+  assert.deepStrictEqual(Object.keys(playerResponse).sort(),['createdAt','id','name','updatedAt']);
+  const teamResponse=serializeTeamResponse({id:'team-id',name:'A team',created_at:createdAt,updated_at:updatedAt},[
+    {id:9,name:'A player'},{id:10,name:'Another player'},
+  ]);
+  assert.deepStrictEqual(Object.keys(teamResponse).sort(),['createdAt','id','name','players','updatedAt']);
+  const rawStandings=computeTournamentStandings('1v1',[{id:'p1',name:'Player 1'},{id:'p2',name:'Player 2'}],[]).players;
+  const standingRows=serializeStandingRows(rawStandings);
+  assert.deepStrictEqual(Object.keys(standingRows[0]!).sort(),[
+    'draws','losses','matchesPlayed','name','playerIds','pointDifferential','pointsAgainst','pointsFor','rank','subjectType','wins',
+  ]);
 
   assert.throws(() => postgresPoolConfig({ NODE_ENV: 'production', POSTGRES_URL: 'postgres://a:b@host/db' }), /sslmode/);
   assert.throws(() => postgresPoolConfig({ POSTGRES_URL: 'postgres://a:b@host/db', VERCEL: '1', DB_POOL_MAX: '6' }), /between 1 and 5/);

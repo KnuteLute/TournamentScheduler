@@ -33,6 +33,7 @@ import {
   MatchPauseInterval,
   MatchSide,
   Participant,
+  StandingRow,
   pauseMatch,
   pauseTournament,
   recalculateTournamentStandings,
@@ -265,6 +266,23 @@ function normalizedName(name: string,max=80): { display: string; key: string } {
     throw new StoreValidationError([{ pointer: '/name', code: 'invalid-name', message: 'Name must be non-empty and bounded.' }]);
   }
   return { display, key };
+}
+
+export function serializePlayerResponse(row: Pick<PlayerRow,'id'|'name'|'created_at'|'updated_at'>): Record<string,unknown>{
+  return {id:String(row.id),name:row.name,createdAt:dateText(row.created_at),updatedAt:dateText(row.updated_at)};
+}
+
+export function serializeTeamResponse(
+  row: Pick<TeamRow,'id'|'name'|'created_at'|'updated_at'>,
+  players: ReadonlyArray<{id:number;name:string}>,
+): Record<string,unknown>{
+  return {id:row.id,name:row.name,players:players.map(player=>({id:String(player.id),name:player.name})),
+    createdAt:dateText(row.created_at),updatedAt:dateText(row.updated_at)};
+}
+
+/** Remove the internal stable key used for domain grouping/ranking. */
+export function serializeStandingRows(rows:readonly StandingRow[]):Array<Omit<StandingRow,'key'>>{
+  return rows.map(({key:_key,...row})=>row);
 }
 
 function operationScope(request: StoreRequest): string {
@@ -880,7 +898,7 @@ export class PostgresApiStore implements ApiStore {
   }
 
   private playerValue(row: PlayerRow): Record<string, unknown> {
-    return { id:String(row.id),name:row.name,createdAt:dateText(row.created_at),updatedAt:dateText(row.updated_at),version:Number(row.version) };
+    return serializePlayerResponse(row);
   }
 
   private async listPlayers<T>(tx: Queryable, ownerId: string, query?: StoreRequest['query']): Promise<StoreResult<T>> {
@@ -960,8 +978,7 @@ export class PostgresApiStore implements ApiStore {
       `SELECT p.id,p.name,tm.position FROM team_members tm JOIN players p ON p.id=tm.player_id
        WHERE tm.team_id=$1 AND tm.owner_id=$2 ORDER BY tm.position`,[row.id,row.owner_id],
     );
-    return {id:row.id,name:row.name,players:members.map(player=>({id:String(player.id),name:player.name})),
-      createdAt:dateText(row.created_at),updatedAt:dateText(row.updated_at),version:Number(row.version)};
+    return serializeTeamResponse(row,members);
   }
 
   private async listTeams<T>(tx: Queryable, ownerId: string, query?: StoreRequest['query']): Promise<StoreResult<T>> {
@@ -1578,7 +1595,7 @@ export class PostgresApiStore implements ApiStore {
     if(view!=='players'&&view!=='teams')throw new StoreValidationError([{pointer:'/view',code:'invalid-view',message:'Standings view is invalid.'}]);
     const standings=recalculateTournamentStandings(loaded.state.mode,loaded.state.participants,loaded.state.matches,loaded.fixedTeams);
     return {value:{scope:'tournament',view,tournamentId:loaded.row.public_id,tournamentVersion:Number(loaded.row.version),
-      rows:view==='players'?standings.players:standings.teams,calculatedAt:new Date().toISOString()} as T,etag:quoteEtag(Number(loaded.row.version))};
+      rows:serializeStandingRows(view==='players'?standings.players:standings.teams),calculatedAt:new Date().toISOString()} as T,etag:quoteEtag(Number(loaded.row.version))};
   }
 
   private async getOverallStandings<T>(tx:Queryable,ownerId:string,query?:StoreRequest['query']):Promise<StoreResult<T>>{
@@ -1592,7 +1609,7 @@ export class PostgresApiStore implements ApiStore {
     }
     const players=await tx.query<{id:number;name:string}>(`SELECT id,name FROM players WHERE owner_id=$1 AND deleted_at IS NULL ORDER BY id`,[ownerId]);
     const overall=computeOverallStandings({tournaments:histories,players:players.map(player=>({id:String(player.id),name:player.name}))});
-    const rows=view==='players'?overall.players:overall.teams;
+    const rows=serializeStandingRows(view==='players'?overall.players:overall.teams);
     const fingerprint=createHash('sha256').update(JSON.stringify(rows)).digest('hex').slice(0,32);
     return {value:{scope:'overall',view,tournamentId:null,tournamentVersion:null,rows,
       calculatedAt:new Date().toISOString()} as T,etag:`overall-${fingerprint}`};
