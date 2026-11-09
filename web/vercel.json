@@ -1,17 +1,54 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
-  "builds":[
+  "builds": [
     {
       "src": "src/app.ts",
       "use": "@vercel/node",
       "config": {
-        "includeFiles":["views/**", "public/**"]
+        "includeFiles": ["views/**", "public/**"]
+      }
+    },
+    {
+      "src": "../frontend/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "buildCommand": "npm run build -- --outDir=dist",
+        "distDir": "dist"
       }
     }
   ],
-  "routes":[
+  "routes": [
     {
-      "src": "/(.*)",
+      "src": "^/app(?:/.*)?$",
+      "headers": {
+        "Content-Security-Policy": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "no-referrer",
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+        "Strict-Transport-Security": "max-age=31536000"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/api/v1(?:/.*)?$",
+      "dest": "src/app.ts"
+    },
+    {
+      "src": "^/app/assets/(.*)$",
+      "dest": "/assets/$1"
+    },
+    {
+      "src": "^/app/(.+\\.[A-Za-z0-9]+)$",
+      "dest": "/$1"
+    },
+    {
+      "src": "^/app(?:/.*)?$",
+      "dest": "/index.html"
+    },
+    {
+      "src": "^/(.*)$",
       "dest": "src/app.ts"
     }
   ]
