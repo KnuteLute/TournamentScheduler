@@ -67,8 +67,8 @@ export const bodyValidators: Readonly<Record<string, Validator>> = {
 	"session.createGuest": noBody,
 	"session.revoke": noBody,
 	"auth.logout": noBody,
-	"auth.login": (raw) => credentials(raw),
-	"auth.register": (raw) => credentials(raw),
+	"auth.login": validateLoginCredentials,
+	"auth.register": validateRegisterCredentials,
 	"session.claimGuest": (raw) => {
 		const body = object(raw);
 		exact(body, ["renames"], ["renames"]);
@@ -170,13 +170,26 @@ export function validateTournamentPatch(raw: unknown, mode: TournamentMode): Jso
 	return result;
 }
 
-function credentials(raw: unknown): JsonObject {
+export function validateLoginCredentials(raw: unknown): JsonObject {
+	return credentials(raw, 1, 72);
+}
+
+export function validateRegisterCredentials(raw: unknown): JsonObject {
+	return credentials(raw, 12, 72);
+}
+
+function credentials(raw: unknown, minCharacters: number, maxCharacters: number): JsonObject {
 	const body = object(raw);
 	exact(body, ["username", "password"], ["username", "password"]);
 	const username = boundedString(body.username, "/username", 3, 64);
 	if (!/^[\p{L}\p{N}_.@-]+$/u.test(username)) invalid("/username", "format", "Username contains unsupported characters.");
-	if (typeof body.password !== "string" || body.password.length < 12 || body.password.length > 128) {
-		invalid("/password", "length", "Password must contain 12 to 128 characters.");
+	if (typeof body.password !== "string") invalid("/password", "type", "Expected a string.");
+	const passwordCharacters = Array.from(body.password).length;
+	if (passwordCharacters < minCharacters || passwordCharacters > maxCharacters) {
+		invalid("/password", "length", `Password must contain ${minCharacters} to ${maxCharacters} characters.`);
+	}
+	if (Buffer.byteLength(body.password, "utf8") > 72) {
+		invalid("/password", "bcrypt-byte-limit", "Password must not exceed 72 UTF-8 bytes.");
 	}
 	return { username, password: body.password };
 }

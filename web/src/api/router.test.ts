@@ -1,4 +1,5 @@
 import assert from "assert";
+import bcrypt from "bcrypt";
 import { createServer, request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import express from "express";
@@ -7,10 +8,16 @@ import type { ApiConfig } from "../config/api";
 import { csrfForSession, newOpaqueCredential, protectedHash } from "../auth/credentials";
 import type { ApiStore, RateLimitRequest, SessionRecord, StoreRequest } from "../services/ports";
 import { createApiConfig } from "../config/api";
+import { bodyValidators, validateLoginCredentials, validateRegisterCredentials } from "./validation";
+import { ApiProblem } from "./problem";
 
 const cases: Array<{ name: string; run: () => Promise<void> }> = [];
 function test(name: string, run: () => Promise<void>): void {
 	cases.push({ name, run });
+}
+
+function assertValidationFailure(run: () => unknown, fieldCode: string): void {
+	assert.throws(run, (error: unknown) => error instanceof ApiProblem && error.errors?.some((issue) => issue.code === fieldCode) === true);
 }
 
 const config: ApiConfig = {
@@ -62,12 +69,16 @@ function send(port: number, method: string, path: string, headers: Record<string
 	});
 }
 
-function mockStore(options: { session?: SessionRecord; allowRate?: boolean; value?: unknown } = {}): { store: ApiStore; operations: StoreRequest[]; rateRequests: RateLimitRequest[] } {
+function mockStore(options: { session?: SessionRecord; allowRate?: boolean; value?: unknown } = {}): { store: ApiStore; operations: StoreRequest[]; rateRequests: RateLimitRequest[]; accountLookups: string[] } {
 	const operations: StoreRequest[] = [];
 	const rateRequests: RateLimitRequest[] = [];
+	const accountLookups: string[] = [];
 	const store: ApiStore = {
 		lookupSessionByTokenHash: async () => options.session ?? null,
-		findAccountByUsernameKey: async () => null,
+		findAccountByUsernameKey: async (usernameKey) => {
+			accountLookups.push(usernameKey);
+			return null;
+		},
 		consumeRateLimit: async (request) => {
 			rateRequests.push(request);
 			return { allowed: options.allowRate ?? true, retryAfterSeconds: 30 };
@@ -78,7 +89,7 @@ function mockStore(options: { session?: SessionRecord; allowRate?: boolean; valu
 		},
 		healthCheck: async () => true,
 	};
-	return { store, operations, rateRequests };
+	return { store, operations, rateRequests, accountLookups };
 }
 
 test("health is read-only and protected resources reject missing sessions", async () => {
@@ -161,6 +172,63 @@ test("invalid or expired presented session cookies are expired and never bootstr
 			assert.match(setCookie, /Expires=Thu, 01 Jan 1970/);
 			assert.match(setCookie, /HttpOnly; Secure; SameSite=Lax/);
 		}
+	});
+});
+
+test("login and registration use distinct password length rules and bcrypt byte limits", async () => {
+	const login = bodyValidators["auth.login"]!;
+	const register = bodyValidators["auth.register"]!;
+	assert.equal((login({ username: "legacy", password: "secret" }) as { password: string }).password, "secret");
+	assertValidationFailure(() => register({ username: "newaccount", password: "12345678901" }), "length");
+	assert.equal((validateRegisterCredentials({ username: "newaccount", password: "123456789012" }) as { password: string }).password, "123456789012");
+	assert.equal((validateLoginCredentials({ username: "legacy", password: "é".repeat(36) }) as { password: string }).password.length, 36);
+	assert.equal((validateRegisterCredentials({ username: "newaccount", password: "é".repeat(36) }) as { password: string }).password.length, 36);
+	assertValidationFailure(() => validateLoginCredentials({ username: "legacy", password: "é".repeat(37) }), "bcrypt-byte-limit");
+	assertValidationFailure(() => validateRegisterCredentials({ username: "newaccount", password: "é".repeat(37) }), "bcrypt-byte-limit");
+
+	const { store, operations, accountLookups, rateRequests } = mockStore();
+	await withApi(store, async (port) => {
+		const headers = {
+			Origin: config.origin,
+			"Content-Type": "application/json",
+			"Idempotency-Key": "password-boundary-test-001",
+		};
+		const shortLegacyLogin = await send(port, "POST", "/api/v1/auth/login", headers, JSON.stringify({ username: "legacy", password: "secret" }));
+		assert.equal(shortLegacyLogin.status, 401);
+		assert.deepEqual(accountLookups, ["legacy"]);
+		const beforeRejectedPasswords = rateRequests.length;
+		const bcryptMethods = bcrypt as unknown as {
+			hash: (...args: unknown[]) => unknown;
+			compare: (...args: unknown[]) => unknown;
+		};
+		const originalHash = bcryptMethods.hash;
+		const originalCompare = bcryptMethods.compare;
+		let hashCalls = 0;
+		let compareCalls = 0;
+		bcryptMethods.hash = (...args) => {
+			hashCalls += 1;
+			return originalHash(...args);
+		};
+		bcryptMethods.compare = (...args) => {
+			compareCalls += 1;
+			return originalCompare(...args);
+		};
+		try {
+			const longUtf8Login = await send(port, "POST", "/api/v1/auth/login", headers, JSON.stringify({ username: "legacy", password: "é".repeat(37) }));
+			assert.equal(longUtf8Login.status, 422);
+			const longUtf8Registration = await send(port, "POST", "/api/v1/auth/register", headers, JSON.stringify({ username: "newaccount", password: "é".repeat(37) }));
+			assert.equal(longUtf8Registration.status, 422);
+			const shortRegistration = await send(port, "POST", "/api/v1/auth/register", headers, JSON.stringify({ username: "newaccount", password: "12345678901" }));
+			assert.equal(shortRegistration.status, 422);
+		} finally {
+			bcryptMethods.hash = originalHash;
+			bcryptMethods.compare = originalCompare;
+		}
+		assert.equal(hashCalls, 0);
+		assert.equal(compareCalls, 0);
+		assert.equal(accountLookups.length, 1);
+		assert.equal(operations.length, 0);
+		assert.equal(rateRequests.length, beforeRejectedPasswords + 3);
 	});
 });
 
