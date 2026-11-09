@@ -740,9 +740,20 @@ export interface components {
             id: components["schemas"]["Id"];
             username: string;
         };
-        Credentials: {
+        RegisterCredentials: {
             username: string;
-            /** Format: password */
+            /**
+             * Format: password
+             * @description New account passwords require at least 12 characters. The server additionally rejects passwords over 72 UTF-8 bytes before bcrypt; no truncation is allowed.
+             */
+            password: string;
+        };
+        LoginCredentials: {
+            username: string;
+            /**
+             * Format: password
+             * @description Accept legacy account passwords shorter than the registration minimum. The server rejects passwords over 72 UTF-8 bytes before bcrypt; no truncation is allowed.
+             */
             password: string;
         };
         TransferSummary: {
@@ -1358,7 +1369,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["Credentials"];
+                "application/json": components["schemas"]["RegisterCredentials"];
             };
         };
         responses: {
@@ -1395,7 +1406,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["Credentials"];
+                "application/json": components["schemas"]["LoginCredentials"];
             };
         };
         responses: {
