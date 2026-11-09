@@ -1,5 +1,15 @@
 # Persistence implementation notes
 
+## Intended rollout: fresh empty database
+
+The intended v2 rollout path is a **new, empty PostgreSQL database**. Apply the
+versioned migrations to that database, then point the v2 deployment at it. No
+legacy import is required for this path; the existing Vercel database may remain
+untouched and unused. Do not wipe, reset, or repurpose that existing database as
+part of this workstream. Import tooling below is optional recovery/migration
+support for a separately approved data-preservation decision, not a prerequisite
+or release gate for the fresh-database rollout.
+
 ## API store adapter
 
 `web/src/persistence/api-store.ts` imports and implements the backend-owned
