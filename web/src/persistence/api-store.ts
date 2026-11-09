@@ -21,7 +21,6 @@ import {
   cancelTournament,
   completeMatch,
   computeOverallStandings,
-  computeTournamentStandings,
   correctMatchScore,
   DomainMatch,
   DomainValidationError,
@@ -29,8 +28,6 @@ import {
   FixedTeam,
   GENERATOR_VERSION,
   generateNextRotatingMatch,
-  generateSchedule,
-  MatchPauseInterval,
   MatchSide,
   Participant,
   StandingRow,
@@ -50,7 +47,7 @@ import {
 } from '../domain';
 import { canonicalizeName, NAME_CANONICALIZATION_VERSION } from '../domain/names';
 import { PersistenceConflictError, PersistenceUnavailableError, PostgresDatabase, postgresPoolConfig, Queryable } from './database';
-import { consumeRateLimitBucket, RateLimitConsumeInput } from './rate-limit';
+import { RateLimitConsumeInput } from './rate-limit';
 
 interface AccountRow {
   id: number;
@@ -1491,7 +1488,7 @@ export class PostgresApiStore implements ApiStore {
 
   private matchValue(match:DomainMatch,createdAt:Date):Record<string,unknown>{
     return {id:match.id,round:match.round,sequence:match.sequence,status:match.status,
-      sides:match.sides.map((side,index)=>({participantId:side.fixedTeamId??side.id,name:side.fixedTeamName??side.players.map(player=>player.name).join(' + '),
+      sides:match.sides.map(side=>({participantId:side.fixedTeamId??side.id,name:side.fixedTeamName??side.players.map(player=>player.name).join(' + '),
         players:side.players.map(player=>({id:player.id,name:player.name})),score:side.score})),
       winnerSide:this.winnerSide(match),startTime:match.startTime??null,endTime:match.endTime??null,
       pauseIntervals:match.pauseIntervals,version:match.version,createdAt:dateText(createdAt)};
