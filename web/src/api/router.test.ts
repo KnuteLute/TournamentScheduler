@@ -6,7 +6,7 @@ import express from "express";
 import { createApiRouter } from "./router";
 import type { ApiConfig } from "../config/api";
 import { csrfForSession, newOpaqueCredential, protectedHash } from "../auth/credentials";
-import type { ApiStore, RateLimitRequest, SessionRecord, StoreRequest } from "../services/ports";
+import type { AccountCredential, ApiStore, RateLimitRequest, SessionRecord, StoreRequest } from "../services/ports";
 import { createApiConfig } from "../config/api";
 import { bodyValidators, validateLoginCredentials, validateRegisterCredentials } from "./validation";
 import { ApiProblem } from "./problem";
@@ -69,7 +69,7 @@ function send(port: number, method: string, path: string, headers: Record<string
 	});
 }
 
-function mockStore(options: { session?: SessionRecord; allowRate?: boolean; healthy?: boolean; value?: unknown } = {}): { store: ApiStore; operations: StoreRequest[]; rateRequests: RateLimitRequest[]; accountLookups: string[] } {
+function mockStore(options: { session?: SessionRecord; account?: AccountCredential | null; allowRate?: boolean; healthy?: boolean; value?: unknown } = {}): { store: ApiStore; operations: StoreRequest[]; rateRequests: RateLimitRequest[]; accountLookups: string[] } {
 	const operations: StoreRequest[] = [];
 	const rateRequests: RateLimitRequest[] = [];
 	const accountLookups: string[] = [];
@@ -77,7 +77,7 @@ function mockStore(options: { session?: SessionRecord; allowRate?: boolean; heal
 		lookupSessionByTokenHash: async () => options.session ?? null,
 		findAccountByUsernameKey: async (usernameKey) => {
 			accountLookups.push(usernameKey);
-			return null;
+			return options.account ?? null;
 		},
 		consumeRateLimit: async (request) => {
 			rateRequests.push(request);
@@ -343,7 +343,16 @@ test("pending claim details are owner-scoped, no-store, and use the session ETag
 });
 
 test("guest bootstrap requires same-origin metadata and sets a secure opaque cookie", async () => {
-	const { store, operations } = mockStore();
+	const { store, operations } = mockStore({
+		value: {
+			id: "internal-session-id",
+			version: 8,
+			ownerId: "internal-owner-id",
+			sessionId: "internal-session-id",
+			tokenHash: "must-not-leak",
+			csrfTokenHash: "must-not-leak",
+		},
+	});
 	await withApi(store, async (port) => {
 		const rejected = await send(port, "POST", "/api/v1/sessions", { Origin: "https://attacker.invalid" });
 		assert.equal(rejected.status, 403);
@@ -359,7 +368,83 @@ test("guest bootstrap requires same-origin metadata and sets a secure opaque coo
 		assert.match(cookie, /Secure/);
 		assert.match(cookie, /SameSite=Lax/);
 		assert.match(cookie, /Path=\//);
-		assert.equal(JSON.parse(created.body).csrfToken.length, 43);
+		const response = JSON.parse(created.body);
+		assert.equal(response.csrfToken.length, 43);
+		assert.equal(created.headers.etag, '"v1"');
+		assert.deepEqual(Object.keys(response).sort(), ["account", "csrfToken", "expiresAt", "kind", "pendingGuestClaim"]);
+		assert.doesNotMatch(created.body, /version|ownerId|sessionId|tokenHash|csrfTokenHash/);
+	});
+});
+
+test("session and login responses omit store-only session version and identifiers", async () => {
+	const sessionToken = newOpaqueCredential();
+	const sessionCsrf = csrfForSession(sessionToken, config);
+	const currentSession: SessionRecord = {
+		id: "internal-session-id",
+		ownerId: "owner-1",
+		kind: "authenticated",
+		account: { id: "account-1", username: "legacy" },
+		csrfTokenHash: protectedHash(sessionCsrf, config),
+		expiresAt: new Date(Date.now() + 60_000),
+		revokedAt: null,
+		pendingGuestClaim: false,
+		version: 12,
+	};
+	const internalSession = {
+		id: "internal-session-id",
+		sessionId: "internal-session-id",
+		ownerId: "owner-1",
+		version: 12,
+		tokenHash: "must-not-leak",
+		csrfTokenHash: "must-not-leak",
+		passwordHash: "must-not-leak",
+		kind: "authenticated",
+		account: { id: "account-1", username: "legacy", passwordHash: "must-not-leak" },
+		expiresAt: currentSession.expiresAt.toISOString(),
+		pendingGuestClaim: false,
+	};
+	const { store } = mockStore({ session: currentSession, value: internalSession });
+	await withApi(store, async (port) => {
+		const response = await send(port, "GET", "/api/v1/session", { Cookie: `__Host-ts_session=${sessionToken}` });
+		assert.equal(response.status, 200);
+		assert.equal(response.headers.etag, '"v1"');
+		const body = JSON.parse(response.body);
+		assert.deepEqual(Object.keys(body).sort(), ["account", "csrfToken", "expiresAt", "kind", "pendingGuestClaim"]);
+		assert.equal(body.account.passwordHash, undefined);
+		assert.doesNotMatch(response.body, /version|ownerId|sessionId|tokenHash|csrfTokenHash|passwordHash/);
+	});
+
+	const passwordHash = await bcrypt.hash("legacy-password", config.bcryptRounds);
+	const account: AccountCredential = {
+		id: "account-1",
+		ownerId: "owner-1",
+		username: "legacy",
+		usernameKey: "legacy",
+		passwordHash,
+	};
+	const { store: loginStore } = mockStore({
+		account,
+		value: {
+			version: 99,
+			ownerId: "top-level-owner",
+			session: internalSession,
+			transfer: { status: "none", playersTransferred: 0, teamsTransferred: 0, tournamentsTransferred: 0, conflicts: [] },
+		},
+	});
+	await withApi(loginStore, async (port) => {
+		const response = await send(port, "POST", "/api/v1/auth/login", {
+			Origin: config.origin,
+			"Content-Type": "application/json",
+			"Idempotency-Key": "session-response-login-key",
+		}, JSON.stringify({ username: "legacy", password: "legacy-password" }));
+		assert.equal(response.status, 200);
+		assert.equal(response.headers.etag, '"v1"');
+		const body = JSON.parse(response.body);
+		assert.deepEqual(Object.keys(body).sort(), ["session", "transfer"]);
+		assert.deepEqual(Object.keys(body.session).sort(), ["account", "csrfToken", "expiresAt", "kind", "pendingGuestClaim"]);
+		assert.equal(body.session.pendingGuestClaim, false);
+		assert.equal(body.session.account.passwordHash, undefined);
+		assert.doesNotMatch(response.body, /version|ownerId|sessionId|tokenHash|csrfTokenHash|passwordHash/);
 	});
 });
 
