@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { basename, resolve } from 'path';
 import { PostgresDatabase, Queryable } from './database';
 import { QueryResultRow } from 'pg';
-import { canonicalizeName, NAME_CANONICALIZATION_VERSION } from './names';
+import { canonicalizeName, NAME_CANONICALIZATION_VERSION } from '../domain/names';
 
 export type LegacyEntity = 'users' | 'players' | 'tournaments' | 'matches';
 

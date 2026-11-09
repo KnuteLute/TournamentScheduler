@@ -4,7 +4,7 @@ import * as path from 'path';
 import { promises as fs } from 'fs';
 import { postgresPoolConfig } from './database';
 import { AtomicLocalJsonFile, assertLocalJsonModeAllowed, LocalJsonCorruptError } from './local-json';
-import { canonicalizeName, NAME_CANONICALIZATION_VERSION } from './names';
+import { canonicalizeName, NAME_CANONICALIZATION_VERSION } from '../domain/names';
 import { readMigrations } from './migrations';
 import { Queryable } from './database';
 import { consumeRateLimitBucket, pruneExpiredRateLimitBuckets } from './rate-limit';
