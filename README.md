@@ -35,6 +35,7 @@ Requirements: Node.js 22+, npm, and Docker Compose for PostgreSQL.
    ```sh
    npm ci
    npm run db:migrate --prefix web
+   npm run build
    npm start --prefix web
    ```
 
