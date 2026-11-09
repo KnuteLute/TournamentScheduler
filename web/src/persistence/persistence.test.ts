@@ -9,7 +9,13 @@ import { readMigrations } from './migrations';
 import { Queryable } from './database';
 import { consumeRateLimitBucket, pruneExpiredRateLimitBuckets } from './rate-limit';
 import { createPostgresApiStore, serializePlayerResponse, serializeStandingRows, serializeTeamResponse } from './api-store';
-import { DEFAULT_POSTGRES_IMPORT_BATCH_SIZE, MAX_POSTGRES_IMPORT_BATCH_SIZE } from './legacy-import';
+import {
+  DEFAULT_POSTGRES_IMPORT_BATCH_SIZE,
+  isIdenticalCompletedPostgresBatch,
+  MAX_POSTGRES_IMPORT_BATCH_SIZE,
+  postgresSourceSignature,
+  validatePostgresImportCheckpoint,
+} from './legacy-import';
 import { computeTournamentStandings } from '../domain/standings';
 import { loadPersistenceEnvironment } from './environment';
 
@@ -19,6 +25,16 @@ export async function runPersistenceUnitTests(): Promise<void> {
   assert.notStrictEqual(canonicalizeName('I'), canonicalizeName('ı'));
   assert.strictEqual(DEFAULT_POSTGRES_IMPORT_BATCH_SIZE,250);
   assert.strictEqual(MAX_POSTGRES_IMPORT_BATCH_SIZE,1_000);
+  const importCounts={users:2,players:4,tournaments:1,matches:1};
+  const importHighWater={users:2,players:4,tournaments:1,matches:1};
+  const importSignature=postgresSourceSignature(importCounts,importHighWater);
+  assert.strictEqual(isIdenticalCompletedPostgresBatch('completed',importSignature,importSignature),true);
+  assert.strictEqual(isIdenticalCompletedPostgresBatch('needs_review',importSignature,importSignature),true);
+  assert.strictEqual(isIdenticalCompletedPostgresBatch('completed',importSignature,importSignature,true),false);
+  assert.strictEqual(isIdenticalCompletedPostgresBatch('completed',importSignature,postgresSourceSignature(importCounts,{...importHighWater,matches:2})),false);
+  assert.doesNotThrow(()=>validatePostgresImportCheckpoint(importSignature,importSignature,importSignature));
+  assert.throws(()=>validatePostgresImportCheckpoint(importSignature,postgresSourceSignature(importCounts,{...importHighWater,players:5}),importSignature),/inventory changed/);
+  assert.throws(()=>validatePostgresImportCheckpoint(importSignature,importSignature,Buffer.alloc(32)),/checkpoint checksum/);
   assert.strictEqual(NAME_CANONICALIZATION_VERSION, 'nfkc-casefold-whitespace-v1');
 
   const createdAt=new Date('2029-01-01T00:00:00.000Z');

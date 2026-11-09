@@ -10,6 +10,7 @@ interface Options {
   apply: boolean;
   reconcile: boolean;
   batchSize: number;
+  rescan: boolean;
 }
 
 function parseArgs(args: string[]): Options {
@@ -18,6 +19,7 @@ function parseArgs(args: string[]): Options {
   let apply = false;
   let reconcile = false;
   let batchSize=DEFAULT_POSTGRES_IMPORT_BATCH_SIZE;
+  let rescan=false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '--source') {
@@ -36,6 +38,8 @@ function parseArgs(args: string[]): Options {
       const value=args[++index];
       if(!value||!/^\d+$/.test(value))throw new Error('--limit must be an integer');
       batchSize=Number(value);
+    }else if(arg==='--rescan'){
+      rescan=true;
     } else if (arg === '--dry-run') {
       apply = false;
     } else {
@@ -51,7 +55,8 @@ function parseArgs(args: string[]): Options {
   if (source === 'postgres' && files.length > 0 && args.includes('--file')) throw new Error('--file is only valid for local-json sources');
   if(batchSize<1||batchSize>MAX_POSTGRES_IMPORT_BATCH_SIZE)throw new Error(`--limit must be between 1 and ${MAX_POSTGRES_IMPORT_BATCH_SIZE}`);
   if(source==='local-json'&&args.includes('--limit'))throw new Error('--limit applies only to PostgreSQL imports');
-  return { source, files, apply, reconcile, batchSize };
+  if(rescan&&(source!=='postgres'||!apply))throw new Error('--rescan requires --source postgres --apply');
+  return { source, files, apply, reconcile, batchSize,rescan };
 }
 
 async function main(): Promise<void> {
@@ -66,7 +71,7 @@ async function main(): Promise<void> {
     }
     let summary;
     if (options.source === 'postgres') {
-      summary = await importLegacyPostgres(db!, options.apply, options.batchSize);
+      summary = await importLegacyPostgres(db!, options.apply, options.batchSize,options.rescan);
     } else {
       const localSummaries = [];
       for (const file of options.files) {

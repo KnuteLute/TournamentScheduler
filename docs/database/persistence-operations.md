@@ -78,6 +78,7 @@ npx ts-node scripts/import-legacy.ts --source local-json --file .local-data/offl
 npx ts-node scripts/import-legacy.ts --source local-json --file database/players_index.json --file database/tournament_history.json --file database/match_history.json
 npx ts-node scripts/import-legacy.ts --source postgres
 npx ts-node scripts/import-legacy.ts --source postgres --apply --limit 250
+npx ts-node scripts/import-legacy.ts --source postgres --apply --rescan --limit 250
 npx ts-node scripts/import-legacy.ts --reconcile
 ```
 
@@ -104,9 +105,15 @@ per-entity ID cursors (default 250 rows per entity, configurable up to 1,000).
 If the output reports `checkpointed_batch_incomplete`, rerun the same `--apply`
 command to resume; the source mapping and cursor advance atomically with every
 page. The safe JSON output includes per-entity `checkpoint` and `highWater` IDs.
-After completion, run another dry-run/apply pass to reconcile source rows
-written or changed during the scan. Use a write freeze/catch-up boundary for
-production backfills as required by the migration plan.
+If row counts or high-water IDs change while a checkpoint is active, the importer
+fails closed before resuming; an operator must reconcile that incomplete batch
+before starting a new scan. A completed PostgreSQL batch with the same counts
+and high-water IDs returns `noOp` by default. Because this inventory signature
+cannot detect content edits that preserve both row counts and IDs, production
+imports require a write-freeze/catch-up boundary. If such edits are suspected,
+use `--rescan` to page through the same inventory and compare per-record hashes;
+changed records are retained and marked `needs_review` rather than overwritten.
+Finish any active checkpoint without `--rescan` before starting a full rescan.
 
 ## Local JSON safety boundary
 

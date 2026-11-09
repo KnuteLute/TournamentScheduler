@@ -38,10 +38,24 @@ function hashRecord(row: unknown): Buffer {
   return digest(JSON.stringify(row));
 }
 
-function postgresSourceSignature(counts:Record<string,number>,highWater:Record<string,number>):Buffer{
+export function postgresSourceSignature(counts:Record<string,number>,highWater:Record<string,number>):Buffer{
   return digest(['users','players','tournaments','matches'].map(entity=>
     `${entity}:${counts[entity]??0}:${highWater[entity]??0}`,
   ).join('\n'));
+}
+
+export function validatePostgresImportCheckpoint(stored:Uint8Array,current:Uint8Array,checkpoint:Uint8Array):void{
+  if(!Buffer.from(stored).equals(Buffer.from(checkpoint)))throw new Error('Legacy import checkpoint checksum is invalid; refusing to resume.');
+  if(!Buffer.from(stored).equals(Buffer.from(current)))throw new Error('Legacy source inventory changed during an import checkpoint; refusing to resume.');
+}
+
+export function isIdenticalCompletedPostgresBatch(
+  status:'completed'|'needs_review',
+  storedHash:Uint8Array,
+  currentHash:Uint8Array,
+  rescan=false,
+):boolean{
+  return !rescan&&(status==='completed'||status==='needs_review')&&Buffer.from(storedHash).equals(Buffer.from(currentHash));
 }
 
 function asStableId(value: unknown): string | null {
@@ -437,6 +451,7 @@ export async function importLegacyPostgres(
   db: PostgresDatabase,
   apply: boolean,
   batchSize = DEFAULT_POSTGRES_IMPORT_BATCH_SIZE,
+  rescan=false,
 ): Promise<LegacyImportSummary> {
   const label = 'legacy-postgres:public';
   if(!Number.isSafeInteger(batchSize)||batchSize<1||batchSize>MAX_POSTGRES_IMPORT_BATCH_SIZE)throw new RangeError('PostgreSQL import batch size is outside the supported bound');
@@ -484,16 +499,30 @@ export async function importLegacyPostgres(
     let batchId:string;let checkpoint:{users:number;players:number;tournaments:number;matches:number};
     let cumulativeQuarantined=0;let cumulativeReview=0;let savedCounts:Record<string,unknown>;
     if(active[0]){
+      if(rescan)throw new Error('Resume the active checkpoint without --rescan before starting a full source rescan.');
       batchId=active[0].id;savedCounts=active[0].counts;
       const savedCursor=objectValue(savedCounts.cursor);
       const savedHigh=objectValue(savedCounts.highWater);
-      scanCounts=Object.fromEntries(Object.entries(objectValue(savedCounts.sourceCounts)).map(([key,value])=>[key,safeInteger(value)]));
-      highWater={users:safeInteger(savedHigh.users),players:safeInteger(savedHigh.players),tournaments:safeInteger(savedHigh.tournaments),matches:safeInteger(savedHigh.matches)};
-      sourceSignature=postgresSourceSignature(scanCounts,highWater);
-      if(!Buffer.from(active[0].content_hash).equals(sourceSignature))throw new Error('Legacy import checkpoint checksum is invalid; refusing to resume.');
+      const savedSourceCounts=Object.fromEntries(Object.entries(objectValue(savedCounts.sourceCounts)).map(([key,value])=>[key,safeInteger(value)]));
+      const savedHighWater={users:safeInteger(savedHigh.users),players:safeInteger(savedHigh.players),tournaments:safeInteger(savedHigh.tournaments),matches:safeInteger(savedHigh.matches)};
+      const checkpointSignature=postgresSourceSignature(savedSourceCounts,savedHighWater);
+      validatePostgresImportCheckpoint(active[0].content_hash,sourceSignature,checkpointSignature);
+      scanCounts=savedSourceCounts;highWater=savedHighWater;sourceSignature=checkpointSignature;
       checkpoint={users:safeInteger(savedCursor.users),players:safeInteger(savedCursor.players),tournaments:safeInteger(savedCursor.tournaments),matches:safeInteger(savedCursor.matches)};
       cumulativeQuarantined=safeInteger(savedCounts.quarantined);cumulativeReview=safeInteger(savedCounts.needsReview);
     }else{
+      const prior=await tx.query<{id:string;status:'completed'|'needs_review';content_hash:Buffer;counts:Record<string,unknown>}>(
+        `SELECT id::text,status,content_hash,counts FROM import_batches
+         WHERE source_type='legacy_postgres' AND source_identifier=$1 AND status IN ('completed','needs_review')
+           AND content_hash=$2 ORDER BY started_at DESC LIMIT 1`,[label,sourceSignature],
+      );
+      if(prior[0]&&isIdenticalCompletedPostgresBatch(prior[0].status,prior[0].content_hash,sourceSignature,rescan)){
+        const saved=objectValue(prior[0].counts);
+        return {source:'legacy_postgres',sourceLabel:label,dryRun:false,batchId:prior[0].id,counts:scanCounts,
+          checkpoint:objectValue(saved.cursor) as Record<string,number>,highWater,
+          quarantined:safeInteger(saved.quarantined),needsReview:safeInteger(saved.needsReview),noOp:true,
+          warnings:['identical_source_batch_noop',...(prior[0].status==='needs_review'?['review_required']:[])]};
+      }
       batchId=await beginBatch(tx,'legacy_postgres',label,sourceSignature);
       checkpoint={users:0,players:0,tournaments:0,matches:0};
       savedCounts={highWater,sourceCounts:counts,cursor:checkpoint,quarantined:0,needsReview:0};
